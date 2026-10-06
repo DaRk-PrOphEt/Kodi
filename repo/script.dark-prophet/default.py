@@ -21,6 +21,13 @@ PACK_NOM = 'arctic-fuse-3.zip'
 # jamais les réglages d'extensions qui contiennent des identifiants.
 DOSSIERS = (SKIN, 'script.skinvariables')
 
+# Extensions proposées en plus de l'habillage. Leurs dépôts sont installés
+# d'office avec ce script (voir <requires> dans addon.xml).
+EXTENSIONS = (
+    ('plugin.video.catchuptvandmore', 'Catch-up TV & More'),
+    ('plugin.video.alkoflix', 'alkoFlix'),
+)
+
 ADDON_DATA = xbmcvfs.translatePath('special://profile/addon_data/')
 SAUVEGARDE = os.path.join(ADDON_DATA, 'script.dark-prophet', 'sauvegarde')
 
@@ -42,21 +49,52 @@ def attendre(condition, secondes):
     return xbmc.getCondVisibility(condition)
 
 
+def rafraichir_depots():
+    # Les dépôts tiers viennent d'être installés avec ce script : Kodi doit
+    # avoir lu leur catalogue avant de pouvoir y trouver quoi que ce soit.
+    xbmc.executebuiltin('UpdateAddonRepos')
+    xbmc.sleep(8000)
+
+
+def installer_extension(addon_id):
+    """Lance l'installation (Kodi demande confirmation) et attend qu'elle aboutisse."""
+    if xbmc.getCondVisibility('System.HasAddon(%s)' % addon_id):
+        return True
+    xbmc.executebuiltin('InstallAddon(%s)' % addon_id)
+    if attendre('System.HasAddon(%s)' % addon_id, 300):
+        # Les dépendances finissent de s'installer juste après.
+        xbmc.sleep(5000)
+        return True
+    return False
+
+
 def installer_habillage():
     if xbmc.getCondVisibility('System.HasAddon(%s)' % SKIN):
         return True
     dialog.ok(TITRE, "L'habillage Arctic Fuse 3 va être téléchargé.[CR]Réponds « Oui » quand Kodi te le demande.")
-    # Le dépôt de l'auteur vient d'être installé avec ce script : Kodi doit
-    # avoir lu son catalogue avant de pouvoir y trouver l'habillage.
-    xbmc.executebuiltin('UpdateAddonRepos')
-    xbmc.sleep(8000)
-    xbmc.executebuiltin('InstallAddon(%s)' % SKIN)
-    if attendre('System.HasAddon(%s)' % SKIN, 300):
-        # Les dépendances finissent de s'installer juste après l'habillage.
-        xbmc.sleep(5000)
+    rafraichir_depots()
+    if installer_extension(SKIN):
         return True
     dialog.ok(TITRE, "L'habillage n'a pas pu être installé.[CR]Vérifie la connexion et que Kodi est en version 21 ou plus, puis relance.")
     return False
+
+
+def installer_extensions():
+    manquantes = [(i, n) for i, n in EXTENSIONS if not xbmc.getCondVisibility('System.HasAddon(%s)' % i)]
+    if not manquantes:
+        dialog.ok(TITRE, 'Tout est déjà installé.')
+        return
+    choisies = dialog.multiselect('Extensions à installer', [n for _, n in manquantes],
+                                  preselect=list(range(len(manquantes))))
+    if not choisies:
+        return
+    dialog.ok(TITRE, 'Réponds « Oui » à chaque demande de Kodi.')
+    rafraichir_depots()
+    echecs = [manquantes[c][1] for c in choisies if not installer_extension(manquantes[c][0])]
+    if echecs:
+        dialog.ok(TITRE, 'Non installé : %s.[CR]Vérifie la connexion puis relance.' % ', '.join(echecs))
+    else:
+        dialog.ok(TITRE, 'Extensions installées.')
 
 
 def changer_habillage(skin):
@@ -210,14 +248,17 @@ def exporter_config():
 def menu():
     choix = dialog.select(TITRE, [
         'Installer Arctic Fuse 3 configuré',
+        'Installer les extensions (Catch-up TV, alkoFlix)',
         "Remettre mes réglages d'avant",
         'Exporter la configuration de cet appareil',
     ])
     if choix == 0:
         installer_config()
     elif choix == 1:
-        restaurer_avant()
+        installer_extensions()
     elif choix == 2:
+        restaurer_avant()
+    elif choix == 3:
         exporter_config()
 
 

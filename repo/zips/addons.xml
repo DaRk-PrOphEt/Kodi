@@ -1,5 +1,49 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <addons>
+  <addon id="catchuptvandmore.kodi.release" name="Catch-up TV &amp; More's Release repository" version="0.0.6" provider-name="SylvainCecchetto, wwark">
+    <requires>
+      <import addon="xbmc.addon" version="17.0.0" />
+    </requires>
+    <extension point="xbmc.addon.repository" name="Catch-up TV &amp; More's Release repository">
+      <dir>
+        <info compressed="false">https://raw.github.com/Catch-up-TV-and-More/repository.catchuptvandmore/master/addons_xmls/release/addons.xml</info>
+        <checksum>https://raw.github.com/Catch-up-TV-and-More/repository.catchuptvandmore/master/addons_xmls/release/addons.xml.md5</checksum>
+        <datadir zip="true">https://raw.github.com/Catch-up-TV-and-More/repository.catchuptvandmore/master/zips/release</datadir>
+      </dir>
+    </extension>
+    <extension point="xbmc.addon.metadata">
+      <summary>Install Add-ons from Catch-up TV &amp; More repository</summary>
+      <description>Download and install Catch-up TV &amp; More add-on in its latest official version from the official developers repository. As soon as a new release version is published on the GitHub repository of Catch-up TV &amp; More, this version is available in this repository.</description>
+      <platform>all</platform>
+      <website>https://catch-up-tv-and-more.github.io/</website>
+    </extension>
+  </addon>
+  <addon id="repository.alkoflix" name="Dépôt alkoFlix" version="1.0.1" provider-name="Les alKODIques">
+    <requires>
+      <import addon="xbmc.addon" version="12.0.0" />
+    </requires>
+    <extension point="xbmc.addon.repository" name="Dépôt alkoFlix">
+      <dir>
+        <info compressed="false">https://raw.githubusercontent.com/alKODIque/repository.alkoflix/master/addons.xml</info>
+        <checksum>https://raw.githubusercontent.com/alKODIque/repository.alkoflix/master/addons.xml.md5</checksum>
+        <datadir zip="true">https://raw.githubusercontent.com/alKODIque/repository.alkoflix/master/</datadir>
+      </dir>
+    </extension>
+    <extension point="xbmc.addon.metadata">
+      <summary lang="fr">Dépôt officiel alkoFlix pour Kodi.</summary>
+      <summary lang="en">Official alkoFlix repository for Kodi.</summary>
+      <description lang="fr">Installe et met à jour automatiquement alkoFlix et les extensions Kodi associées.</description>
+      <description lang="en">Install and automatically update alkoFlix and related Kodi add-ons.</description>
+      <license>GPL-3.0</license>
+      <news lang="fr">Correctif du schéma du dépôt Kodi : restauration du bloc &lt;dir&gt; requis par Kodi 21 et incrémentation du dépôt en 1.0.1 pour forcer la réinstallation.</news>
+      <news lang="en">Kodi repository schema fix: restored the &lt;dir&gt; block required by Kodi 21 and bumped the repository to 1.0.1 to force reinstall/update.</news>
+      <platform>all</platform>
+      <assets>
+        <icon>icon.png</icon>
+        <fanart>fanart.jpg</fanart>
+      </assets>
+    </extension>
+  </addon>
   <addon id="repository.dark-prophet" name="DaRk-PrOphEt Repo" version="1.0.0" provider-name="DaRk-PrOphEt">
     <extension point="xbmc.addon.repository" name="DaRk-PrOphEt Repo">
       <dir>
@@ -55,17 +99,19 @@
       </assets>
     </extension>
   </addon>
-  <addon id="script.dark-prophet" name="DaRk-PrOphEt" version="1.0.0" provider-name="DaRk-PrOphEt">
+  <addon id="script.dark-prophet" name="DaRk-PrOphEt" version="1.1.0" provider-name="DaRk-PrOphEt">
     <requires>
       <import addon="xbmc.python" version="3.0.1" />
       <import addon="repository.jurialmunkey" version="3.4" />
+      <import addon="catchuptvandmore.kodi.release" version="0.0.6" />
+      <import addon="repository.alkoflix" version="1.0.1" />
     </requires>
     <extension point="xbmc.python.script" library="default.py">
       <provides>executable</provides>
     </extension>
     <extension point="xbmc.addon.metadata">
       <summary lang="fr_FR">Arctic Fuse 3 configuré par DaRk-PrOphEt</summary>
-      <description lang="fr_FR">Installe l'habillage Arctic Fuse 3 et applique la configuration de DaRk-PrOphEt (menus, widgets, réglages). Demande Kodi 21 ou plus récent.</description>
+      <description lang="fr_FR">Installe l'habillage Arctic Fuse 3 et applique la configuration de DaRk-PrOphEt (menus, widgets, réglages). Ajoute aussi les dépôts de Catch-up TV &amp; More et d'alkoFlix. Demande Kodi 21 ou plus récent.</description>
       <platform>all</platform>
       <assets>
         <icon>icon.png</icon>

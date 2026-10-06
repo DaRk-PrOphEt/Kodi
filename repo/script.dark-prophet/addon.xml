@@ -1,15 +1,17 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="script.dark-prophet" name="DaRk-PrOphEt" version="1.0.0" provider-name="DaRk-PrOphEt">
+<addon id="script.dark-prophet" name="DaRk-PrOphEt" version="1.1.0" provider-name="DaRk-PrOphEt">
     <requires>
         <import addon="xbmc.python" version="3.0.1" />
         <import addon="repository.jurialmunkey" version="3.4" />
+        <import addon="catchuptvandmore.kodi.release" version="0.0.6" />
+        <import addon="repository.alkoflix" version="1.0.1" />
     </requires>
     <extension point="xbmc.python.script" library="default.py">
         <provides>executable</provides>
     </extension>
     <extension point="xbmc.addon.metadata">
         <summary lang="fr_FR">Arctic Fuse 3 configuré par DaRk-PrOphEt</summary>
-        <description lang="fr_FR">Installe l'habillage Arctic Fuse 3 et applique la configuration de DaRk-PrOphEt (menus, widgets, réglages). Demande Kodi 21 ou plus récent.</description>
+        <description lang="fr_FR">Installe l'habillage Arctic Fuse 3 et applique la configuration de DaRk-PrOphEt (menus, widgets, réglages). Ajoute aussi les dépôts de Catch-up TV &amp; More et d'alkoFlix. Demande Kodi 21 ou plus récent.</description>
         <platform>all</platform>
         <assets>
             <icon>icon.png</icon>
