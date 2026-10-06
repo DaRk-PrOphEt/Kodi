@@ -44,7 +44,7 @@
       </assets>
     </extension>
   </addon>
-  <addon id="repository.dark-prophet" name="DaRk-PrOphEt Repo" version="1.0.0" provider-name="DaRk-PrOphEt">
+  <addon id="repository.dark-prophet" name="DaRk-PrOphEt Repo" version="1.0.1" provider-name="DaRk-PrOphEt">
     <extension point="xbmc.addon.repository" name="DaRk-PrOphEt Repo">
       <dir>
         <info compressed="false">https://raw.githubusercontent.com/DaRk-PrOphEt/Kodi/main/repo/zips/addons.xml</info>
@@ -99,7 +99,7 @@
       </assets>
     </extension>
   </addon>
-  <addon id="script.dark-prophet" name="DaRk-PrOphEt" version="1.1.0" provider-name="DaRk-PrOphEt">
+  <addon id="script.dark-prophet" name="DaRk-PrOphEt" version="1.1.1" provider-name="DaRk-PrOphEt">
     <requires>
       <import addon="xbmc.python" version="3.0.1" />
       <import addon="repository.jurialmunkey" version="3.4" />
