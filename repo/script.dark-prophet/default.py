@@ -1,35 +1,60 @@
 # -*- coding: utf-8 -*-
+import glob
 import json
 import os
 import shutil
+import sqlite3
 import zipfile
 from io import BytesIO
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
+from xml.etree import ElementTree
 
 import xbmc
+import xbmcaddon
 import xbmcgui
 import xbmcvfs
 
 TITRE = 'DaRk-PrOphEt'
 SKIN = 'skin.arctic.fuse.3'
 SKIN_SECOURS = 'skin.estuary'
-PACK_URL = 'https://raw.githubusercontent.com/DaRk-PrOphEt/Kodi/main/packs/arctic-fuse-3.zip'
-PACK_NOM = 'arctic-fuse-3.zip'
+ALKOFLIX = 'plugin.video.alkoflix'
+CATCHUP = 'plugin.video.catchuptvandmore'
+NOMS = {SKIN: 'Arctic Fuse 3', ALKOFLIX: 'alkoFlix', CATCHUP: 'Catch-up TV & More'}
+
+PACKS_URL = 'https://raw.githubusercontent.com/DaRk-PrOphEt/Kodi/main/packs/'
+PACK_ALKOFLIX = 'arctic-fuse-3.zip'
+PACK_CATCHUP = 'arctic-fuse-3-catchup.zip'
+
+# Les deux entrées de l'écran de choix au démarrage (formule alkoFlix + Catch-up TV).
+PROFIL_ALKOFLIX = 'alkoFlix'
+PROFIL_CATCHUP = 'Catch-up TV'
 
 # Seuls ces dossiers de réglages voyagent dans un pack : la mise en page,
 # jamais les réglages d'extensions qui contiennent des identifiants.
 DOSSIERS = (SKIN, 'script.skinvariables')
 
-# Extensions proposées en plus de l'habillage. Leurs dépôts sont installés
-# d'office avec ce script (voir <requires> dans addon.xml).
-EXTENSIONS = (
-    ('plugin.video.catchuptvandmore', 'Catch-up TV & More'),
-    ('plugin.video.alkoflix', 'alkoFlix'),
+# Comptes que Catch-up TV & More sait utiliser (préfixe de ses réglages).
+COMPTES = (
+    ('TF1+', 'tf1plus'),
+    ('M6+ (6play)', '6play'),
+    ('RMC BFM Play', 'rmcbfmplay'),
+    ('SFR TV', 'sfrtv'),
+    ('ABweb', 'abweb'),
 )
 
-ADDON_DATA = xbmcvfs.translatePath('special://profile/addon_data/')
+MAITRE = xbmcvfs.translatePath('special://masterprofile/')
+PROFIL = xbmcvfs.translatePath('special://profile/')
+ADDON_DATA = os.path.join(PROFIL, 'addon_data')
 SAUVEGARDE = os.path.join(ADDON_DATA, 'script.dark-prophet', 'sauvegarde')
+
+# Écran « Profils » de Kodi : identifiants fixés par Kodi, les mêmes dans tous les habillages.
+LISTE_PROFILS = 2
+BOUTON_ECRAN_CHOIX = 4
+BOUTON_OK_DOSSIER = 413
+BOUTON_OK_REGLAGES = 28
+BOUTON_OUI = 11
+BOUTON_NON = 10
 
 dialog = xbmcgui.Dialog()
 
@@ -38,16 +63,40 @@ def log(msg):
     xbmc.log('[script.dark-prophet] %s' % msg, xbmc.LOGINFO)
 
 
+def rpc(methode, params=None):
+    reponse = xbmc.executeJSONRPC(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': methode, 'params': params or {}}))
+    return json.loads(reponse).get('result')
+
+
 def attendre(condition, secondes):
     """Attend qu'une condition Kodi devienne vraie. Renvoie False si le délai est dépassé."""
     moniteur = xbmc.Monitor()
-    for _ in range(secondes * 2):
+    for _ in range(secondes * 4):
         if xbmc.getCondVisibility(condition):
             return True
-        if moniteur.waitForAbort(0.5):
+        if moniteur.waitForAbort(0.25):
             return False
     return xbmc.getCondVisibility(condition)
 
+
+def annoncer(texte):
+    """Message de fin. Arctic Fuse 3 recharge l'habillage quand ses réglages
+    changent, ce qui referme le message sans qu'on l'ait lu : on le réaffiche."""
+    for _ in range(3):
+        if dialog.ok(TITRE, texte):
+            return
+        xbmc.sleep(3000)
+
+
+def installe(addon_id):
+    return xbmc.getCondVisibility('System.HasAddon(%s)' % addon_id)
+
+
+def dans_le_profil_principal():
+    return os.path.normpath(PROFIL) == os.path.normpath(MAITRE)
+
+
+# --- Installation des extensions -------------------------------------------
 
 def rafraichir_depots():
     # Les dépôts tiers viennent d'être installés avec ce script : Kodi doit
@@ -57,57 +106,68 @@ def rafraichir_depots():
 
 
 def installer_extension(addon_id):
-    """Lance l'installation (Kodi demande confirmation) et attend qu'elle aboutisse."""
-    if xbmc.getCondVisibility('System.HasAddon(%s)' % addon_id):
+    """Lance l'installation, confirme à la place de l'utilisateur et attend qu'elle aboutisse."""
+    if installe(addon_id):
         return True
     xbmc.executebuiltin('InstallAddon(%s)' % addon_id)
-    if attendre('System.HasAddon(%s)' % addon_id, 300):
-        # Les dépendances finissent de s'installer juste après.
-        xbmc.sleep(5000)
-        return True
-    return False
-
-
-def installer_habillage():
-    if xbmc.getCondVisibility('System.HasAddon(%s)' % SKIN):
-        return True
-    dialog.ok(TITRE, "L'habillage Arctic Fuse 3 va être téléchargé.[CR]Réponds « Oui » quand Kodi te le demande.")
-    rafraichir_depots()
-    if installer_extension(SKIN):
-        return True
-    dialog.ok(TITRE, "L'habillage n'a pas pu être installé.[CR]Vérifie la connexion et que Kodi est en version 21 ou plus, puis relance.")
-    return False
-
-
-def installer_extensions():
-    manquantes = [(i, n) for i, n in EXTENSIONS if not xbmc.getCondVisibility('System.HasAddon(%s)' % i)]
-    if not manquantes:
-        dialog.ok(TITRE, 'Tout est déjà installé.')
-        return
-    choisies = dialog.multiselect('Extensions à installer', [n for _, n in manquantes],
-                                  preselect=list(range(len(manquantes))))
-    if not choisies:
-        return
-    dialog.ok(TITRE, 'Réponds « Oui » à chaque demande de Kodi.')
-    rafraichir_depots()
-    echecs = [manquantes[c][1] for c in choisies if not installer_extension(manquantes[c][0])]
-    if echecs:
-        dialog.ok(TITRE, 'Non installé : %s.[CR]Vérifie la connexion puis relance.' % ', '.join(echecs))
+    if attendre('Window.IsVisible(yesnodialog)', 15):
+        xbmc.executebuiltin('SendClick(%d)' % BOUTON_OUI)
+    moniteur = xbmc.Monitor()
+    for _ in range(600):
+        if installe(addon_id):
+            break
+        if xbmc.getCondVisibility('Window.IsVisible(okdialog)'):
+            # Kodi annonce un échec (dépendance introuvable, téléchargement coupé…).
+            xbmc.executebuiltin('Dialog.Close(okdialog)')
+            return False
+        if moniteur.waitForAbort(0.5):
+            return False
     else:
-        dialog.ok(TITRE, 'Extensions installées.')
+        return False
+    # Les dépendances finissent de s'installer juste après.
+    xbmc.sleep(5000)
+    if addon_id == SKIN and attendre('Window.IsVisible(yesnodialog)', 5):
+        # Kodi propose de basculer tout de suite : non, on applique d'abord les réglages.
+        xbmc.executebuiltin('SendClick(%d)' % BOUTON_NON)
+        xbmc.sleep(1000)
+    return True
 
+
+def installer_tout(addon_ids):
+    """Installe ce qui manque. Renvoie False (après l'avoir dit) au premier échec."""
+    manquants = [a for a in addon_ids if not installe(a)]
+    if not manquants:
+        return True
+    # Arctic Fuse 3 demande des versions de ses dépendances plus récentes que
+    # celles du dépôt officiel de Kodi : sans ce réglage (« Mettre à jour les
+    # extensions officielles depuis : Tous les dépôts »), Kodi refuse de l'installer.
+    rpc('Settings.SetSettingValue', {'setting': 'addons.updatemode', 'value': 1})
+    progression = xbmcgui.DialogProgressBG()
+    progression.create(TITRE, 'Lecture des dépôts…')
+    try:
+        rafraichir_depots()
+        for numero, addon_id in enumerate(manquants):
+            progression.update(int(100 * numero / len(manquants)), TITRE, 'Installation de %s…' % NOMS[addon_id])
+            # Sur un Kodi tout neuf, les catalogues des dépôts arrivent parfois
+            # après la première tentative : on réessaie une fois.
+            if not installer_extension(addon_id) and not (rafraichir_depots() or installer_extension(addon_id)):
+                dialog.ok(TITRE, "%s n'a pas pu être installé.[CR]Vérifie la connexion et que Kodi est en version 21 ou plus, puis relance." % NOMS[addon_id])
+                return False
+    finally:
+        progression.close()
+    return True
+
+
+# --- Habillage et packs de réglages ----------------------------------------
 
 def changer_habillage(skin):
     if xbmc.getSkinDir() == skin:
         return True
-    xbmc.executeJSONRPC(json.dumps({
-        'jsonrpc': '2.0', 'id': 1, 'method': 'Settings.SetSettingValue',
-        'params': {'setting': 'lookandfeel.skin', 'value': skin},
-    }))
+    rpc('Settings.SetSettingValue', {'setting': 'lookandfeel.skin', 'value': skin})
     # Kodi demande « Conserver ce changement ? » et annule seul au bout de
     # quelques secondes : on répond Oui à sa place.
     if attendre('Window.IsVisible(yesnodialog)', 20):
-        xbmc.executebuiltin('SendClick(11)')
+        xbmc.executebuiltin('SendClick(%d)' % BOUTON_OUI)
     moniteur = xbmc.Monitor()
     for _ in range(40):
         if xbmc.getSkinDir() == skin:
@@ -118,22 +178,26 @@ def changer_habillage(skin):
     return False
 
 
-def telecharger_pack():
+def telecharger_pack(nom, muet=False):
+    """Renvoie l'archive, ou None (pack pas encore publié, ou réseau en panne)."""
     try:
-        with urlopen(PACK_URL, timeout=30) as reponse:
-            return zipfile.ZipFile(BytesIO(reponse.read()))
+        with urlopen(PACKS_URL + nom, timeout=30) as reponse:
+            archive = zipfile.ZipFile(BytesIO(reponse.read()))
+        if any(membres_autorises(archive, ADDON_DATA)):
+            return archive
+        log('pack %s sans réglage utilisable' % nom)
     except HTTPError as erreur:
-        if erreur.code == 404:
-            dialog.ok(TITRE, "La configuration n'est pas encore publiée sur le dépôt.")
-        else:
+        log('pack %s : erreur %s' % (nom, erreur.code))
+        if not muet and erreur.code != 404:
             dialog.ok(TITRE, 'Téléchargement refusé (erreur %s).' % erreur.code)
     except (URLError, OSError, zipfile.BadZipFile) as erreur:
-        log('telechargement : %r' % erreur)
-        dialog.ok(TITRE, 'Téléchargement impossible. Vérifie la connexion puis relance.')
+        log('pack %s : %r' % (nom, erreur))
+        if not muet:
+            dialog.ok(TITRE, 'Téléchargement impossible. Vérifie la connexion puis relance.')
     return None
 
 
-def membres_autorises(archive):
+def membres_autorises(archive, racine):
     """Fichiers du pack qu'on accepte d'écrire : addon_data/<dossier connu>/..."""
     for info in archive.infolist():
         morceaux = info.filename.replace('\\', '/').split('/')
@@ -141,7 +205,19 @@ def membres_autorises(archive):
             continue
         if morceaux[0] != 'addon_data' or morceaux[1] not in DOSSIERS:
             continue
-        yield info, os.path.join(ADDON_DATA, *morceaux[1:])
+        yield info, os.path.join(racine, *morceaux[1:])
+
+
+def ecrire_pack(archive, racine):
+    for dossier in DOSSIERS:
+        shutil.rmtree(os.path.join(racine, dossier), ignore_errors=True)
+    nombre = 0
+    for info, cible in membres_autorises(archive, racine):
+        os.makedirs(os.path.dirname(cible), exist_ok=True)
+        with archive.open(info) as source, open(cible, 'wb') as sortie:
+            shutil.copyfileobj(source, sortie)
+        nombre += 1
+    return nombre
 
 
 def sauvegarder_actuel():
@@ -150,18 +226,6 @@ def sauvegarder_actuel():
         source = os.path.join(ADDON_DATA, dossier)
         if os.path.isdir(source):
             shutil.copytree(source, os.path.join(SAUVEGARDE, dossier))
-
-
-def ecrire_pack(archive):
-    for dossier in DOSSIERS:
-        shutil.rmtree(os.path.join(ADDON_DATA, dossier), ignore_errors=True)
-    nombre = 0
-    for info, cible in membres_autorises(archive):
-        os.makedirs(os.path.dirname(cible), exist_ok=True)
-        with archive.open(info) as source, open(cible, 'wb') as sortie:
-            shutil.copyfileobj(source, sortie)
-        nombre += 1
-    return nombre
 
 
 def hors_de_l_habillage(action):
@@ -174,31 +238,353 @@ def hors_de_l_habillage(action):
     return changer_habillage(SKIN)
 
 
-def installer_config():
-    if not dialog.yesno(TITRE, "Installer Arctic Fuse 3 avec la configuration de DaRk-PrOphEt ?[CR]Les réglages actuels de cet habillage seront remplacés (une copie est gardée)."):
-        return
-    if not installer_habillage():
-        return
-    archive = telecharger_pack()
+def appliquer_ici(archive):
+    """Applique un pack au profil ouvert et active l'habillage."""
     if archive is None:
-        return
-    if not any(membres_autorises(archive)):
-        dialog.ok(TITRE, 'Le pack téléchargé ne contient aucun réglage utilisable.')
-        return
+        return changer_habillage(SKIN)
 
     def appliquer():
         sauvegarder_actuel()
-        log('%s fichiers écrits' % ecrire_pack(archive))
+        log('%s fichiers écrits' % ecrire_pack(archive, ADDON_DATA))
 
-    if hors_de_l_habillage(appliquer):
-        dialog.ok(TITRE, "C'est installé.[CR]Si des menus manquent, redémarre Kodi une fois.")
+    return hors_de_l_habillage(appliquer)
+
+
+def fermer_fenetres():
+    """Ferme ce qu'un pilotage interrompu aurait laissé ouvert (clavier, fenêtre de profil)."""
+    for _ in range(4):
+        if not xbmc.getCondVisibility('System.HasActiveModalDialog'):
+            break
+        xbmc.executebuiltin('Action(Back)')
+        xbmc.sleep(500)
+
+
+def attendre_le_calme(maximum=60):
+    """À sa première activation, Arctic Fuse 3 fabrique ses menus puis se
+    recharge : tout pilotage lancé pendant ce temps est perdu. On attend
+    quelques secondes sans fenêtre de travail."""
+    moniteur = xbmc.Monitor()
+    calme = 0
+    for _ in range(maximum * 2):
+        occupe = xbmc.getCondVisibility(
+            'Window.IsVisible(progressdialog) | Window.IsVisible(busydialog) | '
+            'Window.IsVisible(busydialognocancel) | Window.IsActive(startup)')
+        calme = 0 if occupe else calme + 1
+        if calme >= 12 or moniteur.waitForAbort(0.5):
+            return
+
+
+def insister(action, *arguments):
+    """Rejoue un pilotage d'écran qui a échoué, après avoir remis Kodi au propre."""
+    for _ in range(3):
+        if action(*arguments):
+            return True
+        fermer_fenetres()
+        attendre_le_calme()
+    return False
+
+
+def retour_accueil():
+    # Un changement de fenêtre ferme les messages ouverts : on attend qu'il
+    # soit fini avant d'en afficher un.
+    fermer_fenetres()
+    xbmc.executebuiltin('ActivateWindow(home)')
+    attendre('Window.IsActive(home)', 10)
+    xbmc.sleep(700)
+
+
+# --- Profils ----------------------------------------------------------------
+
+def profils():
+    return [p['label'] for p in (rpc('Profiles.GetProfiles') or {}).get('profiles', [])]
+
+
+def dossier_du_profil(nom):
+    """Dossier que Kodi a donné au profil, lu dans son fichier des profils."""
+    for profil in ElementTree.parse(os.path.join(MAITRE, 'profiles.xml')).getroot().iter('profile'):
+        if profil.findtext('name') == nom:
+            return os.path.join(MAITRE, *profil.findtext('directory').strip('/').split('/'))
+    return None
+
+
+def ouvrir_ecran_profils():
+    # Juste après son activation, Arctic Fuse 3 se recharge une fois et
+    # annule l'ouverture en cours : on insiste.
+    for _ in range(5):
+        xbmc.executebuiltin('ActivateWindow(profiles)')
+        if attendre('Window.IsActive(profiles)', 6):
+            xbmc.sleep(1500)
+            if xbmc.getCondVisibility('Window.IsActive(profiles)'):
+                return True
+    return False
+
+
+def ouvrir_liste_des_profils(position):
+    """Ouvre l'écran Profils de Kodi et se place sur une case de la liste."""
+    if not ouvrir_ecran_profils():
+        return False
+    # Selon l'habillage, la liste n'apparaît qu'une fois son onglet choisi.
+    for touche in ('Down', 'Down', 'Right', 'Up', 'Left', 'Down'):
+        if xbmc.getCondVisibility('Control.IsVisible(%d)' % LISTE_PROFILS):
+            break
+        xbmc.executebuiltin('Action(%s)' % touche)
+        xbmc.sleep(400)
+    # En deux temps : certains habillages placent la sélection sans donner la main à la liste.
+    xbmc.executebuiltin('SetFocus(%d)' % LISTE_PROFILS)
+    xbmc.sleep(400)
+    xbmc.executebuiltin('SetFocus(%d,%d,absolute)' % (LISTE_PROFILS, position))
+    xbmc.sleep(500)
+    return (xbmc.getCondVisibility('Control.HasFocus(%d)' % LISTE_PROFILS)
+            and xbmc.getInfoLabel('Container(%d).CurrentItem' % LISTE_PROFILS) == str(position + 1))
+
+
+def attendre_fenetre(nom, secondes):
+    """Attend une fenêtre de Kodi en répondant Non aux questions qui
+    s'intercalent (Arctic Fuse 3 propose par exemple d'installer une
+    extension de saisie automatique dès qu'un clavier s'ouvre)."""
+    moniteur = xbmc.Monitor()
+    for _ in range(secondes * 4):
+        if xbmc.getCondVisibility('Window.IsVisible(%s)' % nom):
+            return True
+        refuser_question()
+        if moniteur.waitForAbort(0.25):
+            return False
+    return False
+
+
+def refuser_question():
+    if xbmc.getCondVisibility('Window.IsVisible(yesnodialog)'):
+        xbmc.executebuiltin('SendClick(%d)' % BOUTON_NON)
+        xbmc.sleep(600)
+
+
+def saisir(texte):
+    """Remplit et valide le clavier de Kodi."""
+    if not attendre_fenetre('virtualkeyboard', 10):
+        log('clavier : pas ouvert')
+        return False
+    for _ in range(3):
+        # Le clavier n'accepte le texte qu'une fois son animation d'ouverture finie.
+        xbmc.sleep(1000)
+        refuser_question()
+        rpc('Input.SendText', {'text': texte, 'done': True})
+        xbmc.sleep(700)
+        refuser_question()
+        if not xbmc.getCondVisibility('Window.IsVisible(virtualkeyboard)'):
+            return True
+    log('clavier : texte refusé')
+    return False
+
+
+def creer_profil(nom):
+    """Pilote l'écran « Ajouter un profil » de Kodi : il n'existe pas de
+    commande pour créer un profil, et Kodi réécrit profiles.xml en se fermant."""
+    if nom in profils():
+        return True
+    if not ouvrir_liste_des_profils(len(profils())):
+        log('profil : liste des profils inaccessible')
+        return False
+    xbmc.executebuiltin('Action(Select)')
+    if not saisir(nom):
+        return False
+    if attendre_fenetre('filebrowser', 10):
+        xbmc.sleep(500)
+        xbmc.executebuiltin('SendClick(%d)' % BOUTON_OK_DOSSIER)
+    if not attendre_fenetre('profilesettings', 10):
+        log('profil : fenêtre de réglages pas ouverte')
+        return False
+    xbmc.sleep(500)
+    xbmc.executebuiltin('SendClick(%d)' % BOUTON_OK_REGLAGES)
+    # « Copier les réglages / les sources du profil principal ? » : oui aux deux.
+    for _ in range(3):
+        if not attendre('Window.IsVisible(yesnodialog)', 4):
+            break
+        xbmc.sleep(400)
+        xbmc.executebuiltin('SendClick(%d)' % BOUTON_OUI)
+        xbmc.sleep(800)
+    return nom in profils()
+
+
+def renommer_profil_principal(nom):
+    if profils()[:1] == [nom]:
+        return True
+    if not ouvrir_liste_des_profils(0):
+        return False
+    xbmc.executebuiltin('Action(Select)')
+    if not attendre_fenetre('profilesettings', 10):
+        return False
+    xbmc.sleep(500)
+    # Le nom est la première ligne, déjà sélectionnée à l'ouverture.
+    xbmc.executebuiltin('Action(Select)')
+    saisi = saisir(nom)
+    xbmc.executebuiltin('SendClick(%d)' % BOUTON_OK_REGLAGES)
+    xbmc.sleep(800)
+    return saisi and profils()[:1] == [nom]
+
+
+def activer_ecran_de_choix():
+    if xbmc.getCondVisibility('System.HasLoginScreen'):
+        return True
+    if not ouvrir_ecran_profils():
+        return False
+    xbmc.executebuiltin('SendClick(%d)' % BOUTON_ECRAN_CHOIX)
+    xbmc.sleep(800)
+    return xbmc.getCondVisibility('System.HasLoginScreen')
+
+
+def copier_extensions_actives(dossier):
+    """Un profil neuf démarre avec toutes les extensions désactivées : on lui
+    donne la liste du profil principal (habillage, Catch-up TV, ce script…)."""
+    cible = os.path.join(dossier, 'Database')
+    os.makedirs(cible, exist_ok=True)
+    for base in glob.glob(os.path.join(MAITRE, 'Database', 'Addons*.db')):
+        copie = os.path.join(cible, os.path.basename(base))
+        if os.path.exists(copie):
+            os.remove(copie)
+        source, sortie = sqlite3.connect(base), sqlite3.connect(copie)
+        try:
+            with sortie:
+                source.backup(sortie)
+        finally:
+            source.close()
+            sortie.close()
+
+
+def choisir_habillage_du_profil(dossier):
+    """Le profil reprend les réglages généraux du principal ; on s'assure
+    seulement que son habillage est bien Arctic Fuse 3."""
+    fichier = os.path.join(dossier, 'guisettings.xml')
+    if not os.path.isfile(fichier):
+        shutil.copy(os.path.join(MAITRE, 'guisettings.xml'), fichier)
+    arbre = ElementTree.parse(fichier)
+    for reglage in arbre.getroot().iter('setting'):
+        if reglage.get('id') == 'lookandfeel.skin':
+            reglage.text = SKIN
+            reglage.attrib.pop('default', None)
+            break
+    else:
+        ElementTree.SubElement(arbre.getroot(), 'setting', id='lookandfeel.skin').text = SKIN
+    arbre.write(fichier, encoding='utf-8')
+
+
+GUIDE_PROFIL = (
+    "Kodi n'a pas pu créer le profil tout seul. À faire à la main :[CR]"
+    "1. Paramètres > Profils > Profils > Ajouter un profil[CR]"
+    "2. Nom : %s, puis OK deux fois[CR]"
+    "3. Réponds « Copier » aux deux questions[CR]"
+    "4. Relance ensuite cette formule." % PROFIL_CATCHUP
+)
+
+
+# --- Les deux formules ------------------------------------------------------
+
+def formule_alkoflix():
+    if not dialog.yesno(TITRE, "Installer Arctic Fuse 3 et alkoFlix avec la configuration de DaRk-PrOphEt ?[CR]Les réglages actuels de cet habillage seront remplacés (une copie est gardée)."):
+        return
+    if not installer_tout((SKIN, ALKOFLIX)):
+        return
+    archive = telecharger_pack(PACK_ALKOFLIX)
+    if not appliquer_ici(archive):
+        dialog.ok(TITRE, "Réglages copiés, mais l'habillage n'a pas pu être activé.[CR]Active Arctic Fuse 3 dans Paramètres > Interface.")
+    elif archive is None:
+        annoncer("Arctic Fuse 3 et alkoFlix sont installés.[CR]La configuration n'est pas encore publiée : l'habillage garde ses réglages.")
+    else:
+        annoncer("C'est installé.[CR]Si des menus manquent, redémarre Kodi une fois.")
+
+
+def formule_catchup():
+    if not dialog.yesno(TITRE, "Installer Arctic Fuse 3, alkoFlix et Catch-up TV ?[CR]Au démarrage, Kodi proposera deux entrées : « %s » et « %s ».[CR]Les réglages actuels de l'habillage seront remplacés (une copie est gardée)." % (PROFIL_ALKOFLIX, PROFIL_CATCHUP)):
+        return
+    if not installer_tout((SKIN, ALKOFLIX, CATCHUP)):
+        return
+    pack_alkoflix = telecharger_pack(PACK_ALKOFLIX)
+    # Tant que la configuration Catch-up TV n'est pas publiée, ce profil part
+    # de celle d'alkoFlix : même allure, à alléger ensuite.
+    pack_catchup = telecharger_pack(PACK_CATCHUP, muet=True) or pack_alkoflix
+    if not appliquer_ici(pack_alkoflix):
+        dialog.ok(TITRE, "L'habillage n'a pas pu être activé.[CR]Active Arctic Fuse 3 dans Paramètres > Interface, puis relance.")
+        return
+
+    attendre_le_calme()
+    if not insister(creer_profil, PROFIL_CATCHUP):
+        retour_accueil()
+        dialog.ok(TITRE, GUIDE_PROFIL)
+        xbmc.executebuiltin('ActivateWindow(profiles)')
+        return
+    dossier = dossier_du_profil(PROFIL_CATCHUP)
+    copier_extensions_actives(dossier)
+    choisir_habillage_du_profil(dossier)
+    if pack_catchup is not None:
+        ecrire_pack(pack_catchup, os.path.join(dossier, 'addon_data'))
+
+    renomme = insister(renommer_profil_principal, PROFIL_ALKOFLIX)
+    ecran = insister(activer_ecran_de_choix)
+    retour_accueil()
+    restes = []
+    if not renomme:
+        restes.append("renommer le profil principal en « %s »" % PROFIL_ALKOFLIX)
+    if not ecran:
+        restes.append("activer « Afficher l'écran de connexion au démarrage »")
+    if restes:
+        annoncer("C'est installé. Reste à faire à la main dans Paramètres > Profils :[CR]- " + "[CR]- ".join(restes))
+    else:
+        annoncer("C'est installé.[CR]Redémarre Kodi : tu choisiras entre « %s » et « %s »." % (PROFIL_ALKOFLIX, PROFIL_CATCHUP))
+
+
+def reappliquer_catchup():
+    if not dialog.yesno(TITRE, "Remettre la configuration Catch-up TV de DaRk-PrOphEt sur ce profil ?[CR]Les réglages actuels de l'habillage seront remplacés (une copie est gardée)."):
+        return
+    archive = telecharger_pack(PACK_CATCHUP)
+    if archive is None:
+        dialog.ok(TITRE, "La configuration Catch-up TV n'est pas encore publiée.")
+    elif appliquer_ici(archive):
+        annoncer("C'est appliqué.[CR]Si des menus manquent, redémarre Kodi une fois.")
     else:
         dialog.ok(TITRE, "Réglages copiés, mais l'habillage n'a pas pu être activé.[CR]Active Arctic Fuse 3 dans Paramètres > Interface.")
 
 
+# --- Identifiants Catch-up TV -----------------------------------------------
+
+def identifiants_catchup():
+    """Les comptes restent dans les réglages de Catch-up TV de CE profil :
+    ils ne partent ni dans un pack ni sur le dépôt."""
+    if not installe(CATCHUP):
+        dialog.ok(TITRE, "Catch-up TV n'est pas installé. Lance d'abord la formule « alkoFlix + Catch-up TV ».")
+        return
+    if dans_le_profil_principal() and PROFIL_CATCHUP in profils():
+        if not dialog.yesno(TITRE, "Les identifiants sont propres à chaque profil.[CR]Ceux saisis ici ne serviront pas dans le profil « %s » : ouvre-le et relance ce menu.[CR]Les saisir quand même ici ?" % PROFIL_CATCHUP):
+            return
+    catchup = xbmcaddon.Addon(CATCHUP)
+    while True:
+        lignes = []
+        for nom, cle in COMPTES:
+            compte = catchup.getSetting(cle + '.login')
+            lignes.append('%s : %s' % (nom, compte or 'non renseigné'))
+        lignes.append('Tous les réglages de Catch-up TV…')
+        choix = dialog.select('Mes identifiants Catch-up TV', lignes)
+        if choix < 0:
+            return
+        if choix == len(COMPTES):
+            catchup.openSettings()
+            return
+        nom, cle = COMPTES[choix]
+        compte = dialog.input('%s : adresse ou identifiant' % nom, catchup.getSetting(cle + '.login'))
+        if not compte:
+            if catchup.getSetting(cle + '.login') and dialog.yesno(TITRE, 'Effacer le compte %s de cet appareil ?' % nom):
+                catchup.setSetting(cle + '.login', '')
+                catchup.setSetting(cle + '.password', '')
+            continue
+        mot_de_passe = dialog.input('%s : mot de passe' % nom, option=xbmcgui.ALPHANUM_HIDE_INPUT)
+        if mot_de_passe:
+            catchup.setSetting(cle + '.login', compte)
+            catchup.setSetting(cle + '.password', mot_de_passe)
+
+
+# --- Sauvegarde et export ---------------------------------------------------
+
 def restaurer_avant():
     if not os.path.isdir(SAUVEGARDE):
-        dialog.ok(TITRE, "Aucune copie des réglages d'avant sur cet appareil.")
+        dialog.ok(TITRE, "Aucune copie des réglages d'avant sur ce profil.")
         return
     if not dialog.yesno(TITRE, "Remettre les réglages d'avant l'installation ?"):
         return
@@ -212,12 +598,13 @@ def restaurer_avant():
                 shutil.copytree(source, cible)
 
     hors_de_l_habillage(remettre)
-    dialog.ok(TITRE, "Réglages d'avant remis en place.")
+    annoncer("Réglages d'avant remis en place.")
 
 
 def exporter_config():
-    """Fabrique le pack à partir de ce Kodi (à faire sur l'appareil déjà configuré)."""
-    dossier = dialog.browse(3, 'Où enregistrer le pack ?', 'files')
+    """Fabrique le pack à partir du profil ouvert (à faire sur l'appareil déjà configuré)."""
+    nom_pack = PACK_ALKOFLIX if dans_le_profil_principal() else PACK_CATCHUP
+    dossier = dialog.browse(3, 'Où enregistrer %s ?' % nom_pack, 'files')
     if not dossier:
         return
     tampon = BytesIO()
@@ -232,10 +619,10 @@ def exporter_config():
                     archive.write(complet, 'addon_data/' + relatif)
                     nombre += 1
     if not nombre:
-        dialog.ok(TITRE, "Aucun réglage d'Arctic Fuse 3 trouvé sur cet appareil.")
+        dialog.ok(TITRE, "Aucun réglage d'Arctic Fuse 3 trouvé sur ce profil.")
         return
     # xbmcvfs sait écrire sur un partage réseau ou une clé USB, pas open().
-    cible = dossier + PACK_NOM
+    cible = dossier + nom_pack
     sortie = xbmcvfs.File(cible, 'w')
     reussi = sortie.write(bytearray(tampon.getvalue()))
     sortie.close()
@@ -246,20 +633,24 @@ def exporter_config():
 
 
 def menu():
-    choix = dialog.select(TITRE, [
-        'Installer Arctic Fuse 3 configuré',
-        'Installer les extensions (Catch-up TV, alkoFlix)',
-        "Remettre mes réglages d'avant",
-        'Exporter la configuration de cet appareil',
-    ])
-    if choix == 0:
-        installer_config()
-    elif choix == 1:
-        installer_extensions()
-    elif choix == 2:
-        restaurer_avant()
-    elif choix == 3:
-        exporter_config()
+    if dans_le_profil_principal():
+        entrees = [
+            ('Formule alkoFlix', formule_alkoflix),
+            ('Formule alkoFlix + Catch-up TV', formule_catchup),
+            ('Mes identifiants Catch-up TV', identifiants_catchup),
+            ("Remettre mes réglages d'avant", restaurer_avant),
+            ('Exporter la configuration alkoFlix de cet appareil', exporter_config),
+        ]
+    else:
+        entrees = [
+            ('Mes identifiants Catch-up TV', identifiants_catchup),
+            ('Remettre la configuration Catch-up TV', reappliquer_catchup),
+            ("Remettre mes réglages d'avant", restaurer_avant),
+            ('Exporter la configuration Catch-up TV de ce profil', exporter_config),
+        ]
+    choix = dialog.select(TITRE, [libelle for libelle, _ in entrees])
+    if choix >= 0:
+        entrees[choix][1]()
 
 
 if __name__ == '__main__':
