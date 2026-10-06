@@ -11,7 +11,7 @@ import xbmc
 import xbmcgui
 import xbmcvfs
 
-TITRE = 'Pr0phEt'
+TITRE = 'DaRk-PrOphEt'
 SKIN = 'skin.arctic.fuse.3'
 SKIN_SECOURS = 'skin.estuary'
 PACK_URL = 'https://raw.githubusercontent.com/DaRk-PrOphEt/Kodi/main/packs/arctic-fuse-3.zip'
@@ -22,13 +22,13 @@ PACK_NOM = 'arctic-fuse-3.zip'
 DOSSIERS = (SKIN, 'script.skinvariables')
 
 ADDON_DATA = xbmcvfs.translatePath('special://profile/addon_data/')
-SAUVEGARDE = os.path.join(ADDON_DATA, 'script.pr0phet', 'sauvegarde')
+SAUVEGARDE = os.path.join(ADDON_DATA, 'script.dark-prophet', 'sauvegarde')
 
 dialog = xbmcgui.Dialog()
 
 
 def log(msg):
-    xbmc.log('[script.pr0phet] %s' % msg, xbmc.LOGINFO)
+    xbmc.log('[script.dark-prophet] %s' % msg, xbmc.LOGINFO)
 
 
 def attendre(condition, secondes):
@@ -137,7 +137,7 @@ def hors_de_l_habillage(action):
 
 
 def installer_config():
-    if not dialog.yesno(TITRE, "Installer Arctic Fuse 3 avec la configuration de Pr0phEt ?[CR]Les réglages actuels de cet habillage seront remplacés (une copie est gardée)."):
+    if not dialog.yesno(TITRE, "Installer Arctic Fuse 3 avec la configuration de DaRk-PrOphEt ?[CR]Les réglages actuels de cet habillage seront remplacés (une copie est gardée)."):
         return
     if not installer_habillage():
         return

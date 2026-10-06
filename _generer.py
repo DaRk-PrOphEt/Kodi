@@ -15,7 +15,7 @@ from xml.etree import ElementTree
 RACINE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.join(RACINE, 'repo')
 ZIPS = os.path.join(REPO, 'zips')
-DEPOT_ID = 'repository.pr0phet'
+DEPOT_ID = 'repository.dark-prophet'
 IGNORES = {'.git', '.DS_Store', 'thumbs.db', '__pycache__'}
 
 
