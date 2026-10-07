@@ -678,9 +678,22 @@ def fabriquer_pack():
                 for fichier in fichiers:
                     complet = os.path.join(chemin, fichier)
                     relatif = os.path.relpath(complet, ADDON_DATA).replace(os.sep, '/')
-                    archive.write(complet, 'addon_data/' + relatif)
+                    if fichier == 'skinusers.json':
+                        archive.writestr('addon_data/' + relatif, sans_codes(complet))
+                    else:
+                        archive.write(complet, 'addon_data/' + relatif)
                     nombre += 1
     return tampon.getvalue(), nombre
+
+
+def sans_codes(fichier):
+    """Profils internes d'Arctic Fuse 3 (Principal, Enfants…) sans leur code
+    secret : le pack part sur un dépôt public."""
+    with open(fichier, encoding='utf-8') as source:
+        profils_internes = json.load(source)
+    for profil in profils_internes:
+        profil['code'] = None
+    return json.dumps(profils_internes, indent=4, ensure_ascii=False)
 
 
 def pack_du_profil_ouvert():
