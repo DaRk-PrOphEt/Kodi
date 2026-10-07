@@ -40,6 +40,8 @@ PACKS_URL = 'https://raw.githubusercontent.com/DaRk-PrOphEt/Kodi/main/packs/'
 API_PACKS = 'https://api.github.com/repos/DaRk-PrOphEt/Kodi/contents/packs/'
 SIGNATURE = {'name': 'DaRk-PrOphEt', 'email': '67680888+DaRk-PrOphEt@users.noreply.github.com'}
 PACK_ALKOFLIX = 'arctic-fuse-3.zip'
+# Même interface avec moins de rangées par page, pour les boîtiers modestes.
+PACK_LEGER = 'arctic-fuse-3-leger.zip'
 PACK_CATCHUP = 'arctic-fuse-3-catchup.zip'
 
 # Les deux entrées de l'écran de choix au démarrage (formule alkoFlix + Catch-up TV).
@@ -245,6 +247,18 @@ def telecharger_pack(nom, muet=False):
         if not muet:
             dialog.ok(TITRE, 'Téléchargement impossible. Vérifie la connexion puis relance.')
     return None
+
+
+def telecharger_pack_alkoflix():
+    """Le pack du profil alkoFlix. Si une interface allégée est publiée, on
+    demande laquelle installer ; sinon la question n'est pas posée."""
+    leger = telecharger_pack(PACK_LEGER, muet=True)
+    if leger is not None:
+        choix = dialog.select('Quel appareil ?', ['Appareil récent : interface complète',
+                                                  'Boîtier modeste : interface allégée'])
+        if choix == 1:
+            return leger
+    return telecharger_pack(PACK_ALKOFLIX)
 
 
 def membres_autorises(archive, racine):
@@ -534,7 +548,7 @@ def formule_alkoflix():
     if not installer_tout((LANGUE, SONS, SKIN, ALKOFLIX)):
         return
     franciser()
-    archive = telecharger_pack(PACK_ALKOFLIX)
+    archive = telecharger_pack_alkoflix()
     if not appliquer_ici(archive):
         dialog.ok(TITRE, "Réglages copiés, mais l'habillage n'a pas pu être activé.[CR]Active Arctic Fuse 3 dans Paramètres > Interface.")
     elif archive is None:
@@ -549,7 +563,7 @@ def formule_catchup():
     if not installer_tout((LANGUE, SONS, SKIN, ALKOFLIX, CATCHUP)):
         return
     franciser()
-    pack_alkoflix = telecharger_pack(PACK_ALKOFLIX)
+    pack_alkoflix = telecharger_pack_alkoflix()
     pack_catchup = telecharger_pack(PACK_CATCHUP, muet=True) or pack_alkoflix
     if not appliquer_ici(pack_alkoflix):
         dialog.ok(TITRE, "L'habillage n'a pas pu être activé.[CR]Active Arctic Fuse 3 dans Paramètres > Interface, puis relance.")
@@ -697,12 +711,18 @@ def sans_codes(fichier):
 
 
 def pack_du_profil_ouvert():
-    return PACK_ALKOFLIX if dans_le_profil_principal() else PACK_CATCHUP
+    """Nom du pack que le profil ouvert alimente, ou None si on annule."""
+    if not dans_le_profil_principal():
+        return PACK_CATCHUP
+    choix = dialog.select('Quelle interface as-tu réglée ?', ['Interface complète', 'Interface allégée (boîtiers modestes)'])
+    return (PACK_ALKOFLIX, PACK_LEGER)[choix] if choix >= 0 else None
 
 
 def exporter_config():
     """Enregistre le pack du profil ouvert dans un dossier (à faire sur l'appareil déjà configuré)."""
     nom_pack = pack_du_profil_ouvert()
+    if not nom_pack:
+        return
     dossier = dialog.browse(3, 'Où enregistrer %s ?' % nom_pack, 'files')
     if not dossier:
         return
@@ -757,6 +777,8 @@ def publier_config():
     """Envoie le pack du profil ouvert dans packs/ sur le dépôt, à la place de celui en ligne."""
     jeton = jeton_de_publication()
     nom_pack = pack_du_profil_ouvert()
+    if not nom_pack:
+        return
     contenu, nombre = fabriquer_pack()
     if not nombre:
         dialog.ok(TITRE, "Aucun réglage d'Arctic Fuse 3 trouvé sur ce profil.")

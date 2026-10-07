@@ -25,6 +25,11 @@ le profil Catch-up TV. Ils restent sur l'appareil.
 Le script installe lui-même les dépôts officiels dont il a besoin (Kodi refuse de les
 installer comme dépendances).
 
+Si `packs/arctic-fuse-3-leger.zip` existe (même interface, moins de rangées par page),
+les formules demandent « Quel appareil ? » et l'appliquent aux boîtiers modestes.
+Depuis le profil alkoFlix, l'export et la publication demandent quelle interface
+(complète ou allégée) on vient de régler.
+
 Pour publier un pack : régler l'habillage dans le profil voulu, puis lancer le script
 depuis ce profil.
 
