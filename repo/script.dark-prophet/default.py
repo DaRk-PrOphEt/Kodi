@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import base64
 import glob
 import json
 import os
@@ -7,7 +8,7 @@ import sqlite3
 import zipfile
 from io import BytesIO
 from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
 import xbmc
@@ -24,10 +25,20 @@ LANGUE = 'resource.language.fr_fr'
 SONS = 'resource.uisounds.androidtv'
 NOMS = {SKIN: 'Arctic Fuse 3', ALKOFLIX: 'alkoFlix', CATCHUP: 'Catch-up TV & More',
         LANGUE: 'la langue française', SONS: 'les sons Android TV'}
+# Dépôt officiel de chaque extension. Le script les installe lui-même : Kodi
+# refuse d'installer un dépôt en tant que dépendance d'une autre extension.
+DEPOTS = {SKIN: 'repository.jurialmunkey', ALKOFLIX: 'repository.alkoflix', CATCHUP: 'catchuptvandmore.kodi.release'}
+NOMS.update({'repository.jurialmunkey': "le dépôt d'Arctic Fuse 3", 'repository.alkoflix': "le dépôt d'alkoFlix",
+             'catchuptvandmore.kodi.release': 'le dépôt de Catch-up TV'})
 # Le confort : si l'un d'eux ne s'installe pas, la formule continue quand même.
 FACULTATIFS = (LANGUE, SONS)
 
 PACKS_URL = 'https://raw.githubusercontent.com/DaRk-PrOphEt/Kodi/main/packs/'
+# Publication d'un pack depuis Kodi : réservée au propriétaire du dépôt, qui
+# saisit son jeton GitHub dans les paramètres de l'extension. Le jeton reste
+# sur l'appareil.
+API_PACKS = 'https://api.github.com/repos/DaRk-PrOphEt/Kodi/contents/packs/'
+SIGNATURE = {'name': 'DaRk-PrOphEt', 'email': '67680888+DaRk-PrOphEt@users.noreply.github.com'}
 PACK_ALKOFLIX = 'arctic-fuse-3.zip'
 PACK_CATCHUP = 'arctic-fuse-3-catchup.zip'
 
@@ -52,6 +63,9 @@ MAITRE = xbmcvfs.translatePath('special://masterprofile/')
 PROFIL = xbmcvfs.translatePath('special://profile/')
 ADDON_DATA = os.path.join(PROFIL, 'addon_data')
 SAUVEGARDE = os.path.join(ADDON_DATA, 'script.dark-prophet', 'sauvegarde')
+# Les paramètres d'une extension sont propres à chaque profil : le jeton est
+# recopié ici pour servir aussi depuis le profil Catch-up TV.
+FICHIER_JETON = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'jeton')
 
 # Écran « Profils » de Kodi : identifiants fixés par Kodi, les mêmes dans tous les habillages.
 LISTE_PROFILS = 2
@@ -140,7 +154,13 @@ def installer_extension(addon_id):
 
 def installer_tout(addon_ids):
     """Installe ce qui manque. Renvoie False (après l'avoir dit) au premier échec."""
-    manquants = [a for a in addon_ids if not installe(a)]
+    manquants = []
+    for addon_id in addon_ids:
+        if not installe(addon_id):
+            depot = DEPOTS.get(addon_id)
+            if depot and not installe(depot):
+                manquants.append(depot)
+            manquants.append(addon_id)
     if not manquants:
         return True
     # Arctic Fuse 3 demande des versions de ses dépendances plus récentes que
@@ -153,6 +173,9 @@ def installer_tout(addon_ids):
         rafraichir_depots()
         for numero, addon_id in enumerate(manquants):
             progression.update(int(100 * numero / len(manquants)), TITRE, 'Installation de %s…' % NOMS[addon_id])
+            if numero and manquants[numero - 1] in DEPOTS.values():
+                # Un dépôt vient d'arriver : Kodi doit lire son catalogue.
+                rafraichir_depots()
             # Sur un Kodi tout neuf, les catalogues des dépôts arrivent parfois
             # après la première tentative : on réessaie une fois.
             if not installer_extension(addon_id) and not (rafraichir_depots() or installer_extension(addon_id)):
@@ -644,12 +667,8 @@ def restaurer_avant():
     annoncer("Réglages d'avant remis en place.")
 
 
-def exporter_config():
-    """Fabrique le pack à partir du profil ouvert (à faire sur l'appareil déjà configuré)."""
-    nom_pack = PACK_ALKOFLIX if dans_le_profil_principal() else PACK_CATCHUP
-    dossier = dialog.browse(3, 'Où enregistrer %s ?' % nom_pack, 'files')
-    if not dossier:
-        return
+def fabriquer_pack():
+    """Zippe les réglages d'habillage du profil ouvert. Renvoie (octets, nombre de fichiers)."""
     tampon = BytesIO()
     nombre = 0
     with zipfile.ZipFile(tampon, 'w', zipfile.ZIP_DEFLATED) as archive:
@@ -661,18 +680,99 @@ def exporter_config():
                     relatif = os.path.relpath(complet, ADDON_DATA).replace(os.sep, '/')
                     archive.write(complet, 'addon_data/' + relatif)
                     nombre += 1
+    return tampon.getvalue(), nombre
+
+
+def pack_du_profil_ouvert():
+    return PACK_ALKOFLIX if dans_le_profil_principal() else PACK_CATCHUP
+
+
+def exporter_config():
+    """Enregistre le pack du profil ouvert dans un dossier (à faire sur l'appareil déjà configuré)."""
+    nom_pack = pack_du_profil_ouvert()
+    dossier = dialog.browse(3, 'Où enregistrer %s ?' % nom_pack, 'files')
+    if not dossier:
+        return
+    contenu, nombre = fabriquer_pack()
     if not nombre:
         dialog.ok(TITRE, "Aucun réglage d'Arctic Fuse 3 trouvé sur ce profil.")
         return
     # xbmcvfs sait écrire sur un partage réseau ou une clé USB, pas open().
     cible = dossier + nom_pack
     sortie = xbmcvfs.File(cible, 'w')
-    reussi = sortie.write(bytearray(tampon.getvalue()))
+    reussi = sortie.write(bytearray(contenu))
     sortie.close()
     if reussi:
         dialog.ok(TITRE, 'Pack enregistré (%s fichiers) :[CR]%s' % (nombre, cible))
     else:
         dialog.ok(TITRE, "Écriture impossible dans ce dossier.")
+
+
+# --- Publication sur le dépôt (propriétaire seulement) -----------------------
+
+def jeton_de_publication():
+    jeton = xbmcaddon.Addon().getSetting('jeton').strip()
+    if jeton:
+        if not os.path.isfile(FICHIER_JETON) or open(FICHIER_JETON).read() != jeton:
+            os.makedirs(os.path.dirname(FICHIER_JETON), exist_ok=True)
+            with open(FICHIER_JETON, 'w') as sortie:
+                sortie.write(jeton)
+        return jeton
+    if os.path.isfile(FICHIER_JETON):
+        return open(FICHIER_JETON).read().strip()
+    return ''
+
+
+def github(methode, nom_pack, jeton, corps=None):
+    """Appelle l'API GitHub sur un pack. Renvoie (code HTTP, réponse décodée)."""
+    requete = Request(API_PACKS + nom_pack, method=methode,
+                      data=json.dumps(corps).encode('utf-8') if corps else None,
+                      headers={'Authorization': 'Bearer ' + jeton,
+                               'Accept': 'application/vnd.github+json',
+                               'User-Agent': 'script.dark-prophet'})
+    try:
+        with urlopen(requete, timeout=30) as reponse:
+            return reponse.status, json.loads(reponse.read() or b'{}')
+    except HTTPError as erreur:
+        return erreur.code, {}
+    except (URLError, OSError) as erreur:
+        log('github : %r' % erreur)
+        return 0, {}
+
+
+def publier_config():
+    """Envoie le pack du profil ouvert dans packs/ sur le dépôt, à la place de celui en ligne."""
+    jeton = jeton_de_publication()
+    nom_pack = pack_du_profil_ouvert()
+    contenu, nombre = fabriquer_pack()
+    if not nombre:
+        dialog.ok(TITRE, "Aucun réglage d'Arctic Fuse 3 trouvé sur ce profil.")
+        return
+    if not dialog.yesno(TITRE, "Publier la configuration de ce profil sur le dépôt ?[CR]%s (%s fichiers) remplacera celui en ligne pour tout le monde." % (nom_pack, nombre)):
+        return
+    code, existant = github('GET', nom_pack, jeton)
+    if code not in (200, 404):
+        dialog.ok(TITRE, ERREURS_GITHUB.get(code, 'GitHub a répondu une erreur %s.' % code))
+        return
+    corps = {'message': 'Pack %s publié depuis Kodi' % nom_pack,
+             'content': base64.b64encode(contenu).decode('ascii'),
+             'committer': SIGNATURE, 'author': SIGNATURE}
+    if code == 200:
+        corps['sha'] = existant.get('sha')
+    code, _ = github('PUT', nom_pack, jeton, corps)
+    if code in (200, 201):
+        dialog.ok(TITRE, "%s est publié.[CR]Les nouvelles installations le recevront d'ici 5 minutes environ." % nom_pack)
+    else:
+        dialog.ok(TITRE, ERREURS_GITHUB.get(code, 'GitHub a répondu une erreur %s.' % code))
+
+
+ERREURS_GITHUB = {
+    0: 'GitHub est injoignable. Vérifie la connexion puis relance.',
+    401: "GitHub refuse le jeton : il est mal saisi ou expiré.[CR]Corrige-le dans les paramètres de l'extension.",
+    403: "Ce jeton n'a pas le droit d'écrire dans le dépôt (permission « Contents : Read and write »).",
+    404: "Ce jeton ne donne pas accès au dépôt Kodi.",
+    409: "Le pack en ligne a changé pendant l'envoi. Relance la publication.",
+}
 
 
 def menu():
@@ -696,6 +796,8 @@ def menu():
             ("Remettre mes réglages d'avant", restaurer_avant),
             ('Exporter la configuration Catch-up TV de ce profil', exporter_config),
         ]
+    if jeton_de_publication():
+        entrees.append(('Publier la configuration de ce profil sur le dépôt', publier_config))
     choix = dialog.select(TITRE, [libelle for libelle, _ in entrees])
     if choix >= 0:
         entrees[choix][1]()

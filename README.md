@@ -22,8 +22,16 @@ sans que ses réglages soient modifiés.
 Les identifiants de replay (TF1+, M6+…) se saisissent depuis le menu du script, dans
 le profil Catch-up TV. Ils restent sur l'appareil.
 
-Pour fabriquer un pack : régler l'habillage dans le profil voulu, lancer le script
-depuis ce profil, « Exporter la configuration », puis déposer le zip dans `packs/`.
+Le script installe lui-même les dépôts officiels dont il a besoin (Kodi refuse de les
+installer comme dépendances).
+
+Pour publier un pack : régler l'habillage dans le profil voulu, puis lancer le script
+depuis ce profil.
+
+- « Publier la configuration de ce profil sur le dépôt » l'envoie directement dans
+  `packs/`. L'entrée n'apparaît que si un jeton GitHub est saisi dans les paramètres
+  de l'extension (jeton limité à ce dépôt, permission « Contents : Read and write »).
+- Sinon « Exporter » fabrique le zip, à déposer à la main dans `packs/`.
 
 ## Mettre à jour
 
