@@ -15,6 +15,10 @@ Le script propose deux formules (Kodi 21 ou plus récent) :
   nommé « Catch-up TV » (configuration `packs/arctic-fuse-3-catchup.zip`), renomme le
   profil principal en « alkoFlix » et active l'écran de choix au démarrage.
 
+Les deux formules passent Kodi en français et installent les sons d'Android TV.
+Qui a pris la formule alkoFlix peut ajouter Catch-up TV plus tard depuis le menu,
+sans que ses réglages soient modifiés.
+
 Les identifiants de replay (TF1+, M6+…) se saisissent depuis le menu du script, dans
 le profil Catch-up TV. Ils restent sur l'appareil.
 

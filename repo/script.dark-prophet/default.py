@@ -20,7 +20,12 @@ SKIN = 'skin.arctic.fuse.3'
 SKIN_SECOURS = 'skin.estuary'
 ALKOFLIX = 'plugin.video.alkoflix'
 CATCHUP = 'plugin.video.catchuptvandmore'
-NOMS = {SKIN: 'Arctic Fuse 3', ALKOFLIX: 'alkoFlix', CATCHUP: 'Catch-up TV & More'}
+LANGUE = 'resource.language.fr_fr'
+SONS = 'resource.uisounds.androidtv'
+NOMS = {SKIN: 'Arctic Fuse 3', ALKOFLIX: 'alkoFlix', CATCHUP: 'Catch-up TV & More',
+        LANGUE: 'la langue française', SONS: 'les sons Android TV'}
+# Le confort : si l'un d'eux ne s'installe pas, la formule continue quand même.
+FACULTATIFS = (LANGUE, SONS)
 
 PACKS_URL = 'https://raw.githubusercontent.com/DaRk-PrOphEt/Kodi/main/packs/'
 PACK_ALKOFLIX = 'arctic-fuse-3.zip'
@@ -126,8 +131,8 @@ def installer_extension(addon_id):
         return False
     # Les dépendances finissent de s'installer juste après.
     xbmc.sleep(5000)
-    if addon_id == SKIN and attendre('Window.IsVisible(yesnodialog)', 5):
-        # Kodi propose de basculer tout de suite : non, on applique d'abord les réglages.
+    if addon_id in (SKIN, LANGUE) and attendre('Window.IsVisible(yesnodialog)', 5):
+        # Kodi propose de basculer tout de suite : non, le script s'en charge au bon moment.
         xbmc.executebuiltin('SendClick(%d)' % BOUTON_NON)
         xbmc.sleep(1000)
     return True
@@ -151,11 +156,33 @@ def installer_tout(addon_ids):
             # Sur un Kodi tout neuf, les catalogues des dépôts arrivent parfois
             # après la première tentative : on réessaie une fois.
             if not installer_extension(addon_id) and not (rafraichir_depots() or installer_extension(addon_id)):
+                if addon_id in FACULTATIFS:
+                    log('%s non installé, on continue' % addon_id)
+                    continue
                 dialog.ok(TITRE, "%s n'a pas pu être installé.[CR]Vérifie la connexion et que Kodi est en version 21 ou plus, puis relance." % NOMS[addon_id])
                 return False
     finally:
         progression.close()
     return True
+
+
+def regler(reglage, valeur):
+    """Change un réglage de Kodi s'il n'a pas déjà cette valeur. Renvoie True s'il a changé."""
+    if (rpc('Settings.GetSettingValue', {'setting': reglage}) or {}).get('value') == valeur:
+        return False
+    rpc('Settings.SetSettingValue', {'setting': reglage, 'value': valeur})
+    return True
+
+
+def franciser():
+    """Kodi en français (langue, formats de date et d'heure) avec les sons d'Android TV."""
+    if installe(LANGUE) and regler('locale.language', LANGUE):
+        # Kodi recharge ses textes et l'habillage.
+        xbmc.sleep(4000)
+        regler('locale.country', 'France')
+        xbmc.sleep(1000)
+    if installe(SONS):
+        regler('lookandfeel.soundskin', SONS)
 
 
 # --- Habillage et packs de réglages ----------------------------------------
@@ -479,10 +506,11 @@ GUIDE_PROFIL = (
 # --- Les deux formules ------------------------------------------------------
 
 def formule_alkoflix():
-    if not dialog.yesno(TITRE, "Installer Arctic Fuse 3 et alkoFlix avec la configuration de DaRk-PrOphEt ?[CR]Les réglages actuels de cet habillage seront remplacés (une copie est gardée)."):
+    if not dialog.yesno(TITRE, "Installer Arctic Fuse 3 et alkoFlix avec la configuration de DaRk-PrOphEt ?[CR]Kodi passera en français. Les réglages actuels de cet habillage seront remplacés (une copie est gardée)."):
         return
-    if not installer_tout((SKIN, ALKOFLIX)):
+    if not installer_tout((LANGUE, SONS, SKIN, ALKOFLIX)):
         return
+    franciser()
     archive = telecharger_pack(PACK_ALKOFLIX)
     if not appliquer_ici(archive):
         dialog.ok(TITRE, "Réglages copiés, mais l'habillage n'a pas pu être activé.[CR]Active Arctic Fuse 3 dans Paramètres > Interface.")
@@ -493,18 +521,33 @@ def formule_alkoflix():
 
 
 def formule_catchup():
-    if not dialog.yesno(TITRE, "Installer Arctic Fuse 3, alkoFlix et Catch-up TV ?[CR]Au démarrage, Kodi proposera deux entrées : « %s » et « %s ».[CR]Les réglages actuels de l'habillage seront remplacés (une copie est gardée)." % (PROFIL_ALKOFLIX, PROFIL_CATCHUP)):
+    if not dialog.yesno(TITRE, "Installer Arctic Fuse 3, alkoFlix et Catch-up TV ?[CR]Au démarrage, Kodi proposera deux entrées : « %s » et « %s ».[CR]Kodi passera en français. Les réglages actuels de l'habillage seront remplacés (une copie est gardée)." % (PROFIL_ALKOFLIX, PROFIL_CATCHUP)):
         return
-    if not installer_tout((SKIN, ALKOFLIX, CATCHUP)):
+    if not installer_tout((LANGUE, SONS, SKIN, ALKOFLIX, CATCHUP)):
         return
+    franciser()
     pack_alkoflix = telecharger_pack(PACK_ALKOFLIX)
-    # Tant que la configuration Catch-up TV n'est pas publiée, ce profil part
-    # de celle d'alkoFlix : même allure, à alléger ensuite.
     pack_catchup = telecharger_pack(PACK_CATCHUP, muet=True) or pack_alkoflix
     if not appliquer_ici(pack_alkoflix):
         dialog.ok(TITRE, "L'habillage n'a pas pu être activé.[CR]Active Arctic Fuse 3 dans Paramètres > Interface, puis relance.")
         return
+    preparer_profil_catchup(pack_catchup)
 
+
+def ajouter_catchup():
+    """Pour qui a pris la formule alkoFlix et change d'avis : ajoute Catch-up TV
+    et son profil sans toucher aux réglages du profil ouvert."""
+    if not dialog.yesno(TITRE, "Ajouter Catch-up TV ?[CR]Au démarrage, Kodi proposera deux entrées : « %s » et « %s ».[CR]Tes réglages actuels ne sont pas modifiés." % (PROFIL_ALKOFLIX, PROFIL_CATCHUP)):
+        return
+    if not installer_tout((CATCHUP,)):
+        return
+    preparer_profil_catchup(telecharger_pack(PACK_CATCHUP, muet=True) or telecharger_pack(PACK_ALKOFLIX, muet=True))
+
+
+def preparer_profil_catchup(pack):
+    """Crée le profil Catch-up TV avec son pack, renomme le profil principal et
+    active l'écran de choix. Tant que la configuration Catch-up TV n'est pas
+    publiée, `pack` est celle d'alkoFlix : même allure, à alléger ensuite."""
     attendre_le_calme()
     if not insister(creer_profil, PROFIL_CATCHUP):
         retour_accueil()
@@ -514,8 +557,8 @@ def formule_catchup():
     dossier = dossier_du_profil(PROFIL_CATCHUP)
     copier_extensions_actives(dossier)
     choisir_habillage_du_profil(dossier)
-    if pack_catchup is not None:
-        ecrire_pack(pack_catchup, os.path.join(dossier, 'addon_data'))
+    if pack is not None:
+        ecrire_pack(pack, os.path.join(dossier, 'addon_data'))
 
     renomme = insister(renommer_profil_principal, PROFIL_ALKOFLIX)
     ecran = insister(activer_ecran_de_choix)
@@ -637,6 +680,11 @@ def menu():
         entrees = [
             ('Formule alkoFlix', formule_alkoflix),
             ('Formule alkoFlix + Catch-up TV', formule_catchup),
+        ]
+        if xbmc.getSkinDir() == SKIN and installe(ALKOFLIX) and PROFIL_CATCHUP not in profils():
+            # La formule alkoFlix est déjà en place : on propose d'abord le complément.
+            entrees.insert(0, ('Ajouter Catch-up TV à mon installation', ajouter_catchup))
+        entrees += [
             ('Mes identifiants Catch-up TV', identifiants_catchup),
             ("Remettre mes réglages d'avant", restaurer_avant),
             ('Exporter la configuration alkoFlix de cet appareil', exporter_config),
