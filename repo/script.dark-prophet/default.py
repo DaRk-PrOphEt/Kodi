@@ -23,15 +23,18 @@ ALKOFLIX = 'plugin.video.alkoflix'
 CATCHUP = 'plugin.video.catchuptvandmore'
 LANGUE = 'resource.language.fr_fr'
 SONS = 'resource.uisounds.androidtv'
+# Icônes des menus d'alkoFlix : les packs de réglages s'en servent, mais
+# alkoFlix ne les installe pas d'office (dépendance facultative).
+ICONES = 'resource.images.alkodicons.coal'
 NOMS = {SKIN: 'Arctic Fuse 3', ALKOFLIX: 'alkoFlix', CATCHUP: 'Catch-up TV & More',
-        LANGUE: 'la langue française', SONS: 'les sons Android TV'}
+        LANGUE: 'la langue française', SONS: 'les sons Android TV', ICONES: "les icônes d'alkoFlix"}
 # Dépôt officiel de chaque extension. Le script les installe lui-même : Kodi
 # refuse d'installer un dépôt en tant que dépendance d'une autre extension.
 DEPOTS = {SKIN: 'repository.jurialmunkey', ALKOFLIX: 'repository.alkoflix', CATCHUP: 'catchuptvandmore.kodi.release'}
 NOMS.update({'repository.jurialmunkey': "le dépôt d'Arctic Fuse 3", 'repository.alkoflix': "le dépôt d'alkoFlix",
              'catchuptvandmore.kodi.release': 'le dépôt de Catch-up TV'})
 # Le confort : si l'un d'eux ne s'installe pas, la formule continue quand même.
-FACULTATIFS = (LANGUE, SONS)
+FACULTATIFS = (LANGUE, SONS, ICONES)
 
 PACKS_URL = 'https://raw.githubusercontent.com/DaRk-PrOphEt/Kodi/main/packs/'
 # Publication d'un pack depuis Kodi : réservée au propriétaire du dépôt, qui
@@ -545,7 +548,7 @@ GUIDE_PROFIL = (
 def formule_alkoflix():
     if not dialog.yesno(TITRE, "Installer Arctic Fuse 3 et alkoFlix avec la configuration de DaRk-PrOphEt ?[CR]Kodi passera en français. Les réglages actuels de cet habillage seront remplacés (une copie est gardée)."):
         return
-    if not installer_tout((LANGUE, SONS, SKIN, ALKOFLIX)):
+    if not installer_tout((LANGUE, SONS, SKIN, ALKOFLIX, ICONES)):
         return
     franciser()
     archive = telecharger_pack_alkoflix()
@@ -560,7 +563,7 @@ def formule_alkoflix():
 def formule_catchup():
     if not dialog.yesno(TITRE, "Installer Arctic Fuse 3, alkoFlix et Catch-up TV ?[CR]Au démarrage, Kodi proposera deux entrées : « %s » et « %s ».[CR]Kodi passera en français. Les réglages actuels de l'habillage seront remplacés (une copie est gardée)." % (PROFIL_ALKOFLIX, PROFIL_CATCHUP)):
         return
-    if not installer_tout((LANGUE, SONS, SKIN, ALKOFLIX, CATCHUP)):
+    if not installer_tout((LANGUE, SONS, SKIN, ALKOFLIX, ICONES, CATCHUP)):
         return
     franciser()
     pack_alkoflix = telecharger_pack_alkoflix()
