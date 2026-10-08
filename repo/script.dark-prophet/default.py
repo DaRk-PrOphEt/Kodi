@@ -1,16 +1,22 @@
 # -*- coding: utf-8 -*-
 import base64
 import glob
+import html
 import json
 import os
+import random
 import re
 import shutil
 import sqlite3
+import struct
 import sys
+import threading
+import zlib
 import zipfile
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from io import BytesIO
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
@@ -831,11 +837,15 @@ def identifiants_catchup():
         for nom, cle in COMPTES:
             compte = catchup.getSetting(cle + '.login')
             lignes.append('%s : %s' % (nom, compte or 'non renseigné'))
+        lignes.append('Saisir depuis mon téléphone…')
         lignes.append('Tous les réglages de Catch-up TV…')
         choix = dialog.select('Mes identifiants Catch-up TV', lignes)
         if choix < 0:
             return
         if choix == len(COMPTES):
+            identifiants_par_telephone()
+            continue
+        if choix == len(COMPTES) + 1:
             catchup.openSettings()
             return
         nom, cle = COMPTES[choix]
@@ -849,6 +859,146 @@ def identifiants_catchup():
         if mot_de_passe:
             catchup.setSetting(cle + '.login', compte)
             catchup.setSetting(cle + '.password', mot_de_passe)
+
+
+# --- Identifiants depuis le téléphone ----------------------------------------
+
+def png(lignes):
+    """Image PNG en niveaux de gris à partir de lignes d'octets (0 = noir, 255 = blanc)."""
+    def bloc(genre, contenu):
+        return struct.pack('>I', len(contenu)) + genre + contenu + struct.pack('>I', zlib.crc32(genre + contenu) & 0xffffffff)
+    brut = b''.join(b'\x00' + bytes(ligne) for ligne in lignes)
+    return (b'\x89PNG\r\n\x1a\n' + bloc(b'IHDR', struct.pack('>IIBBBBB', len(lignes[0]), len(lignes), 8, 0, 0, 0, 0))
+            + bloc(b'IDAT', zlib.compress(brut, 9)) + bloc(b'IEND', b''))
+
+
+def image_qr(texte, fichier):
+    """Écrit le QR code de `texte`. Renvoie False si le module de QR codes manque."""
+    try:
+        import qrcode
+        code = qrcode.QRCode(border=3, error_correction=qrcode.constants.ERROR_CORRECT_M)
+        code.add_data(texte)
+        code.make(fit=True)
+        grille = code.get_matrix()
+    except Exception as erreur:   # module absent ou incomplet sur cet appareil : on affichera l'adresse seule
+        log('QR code : %r' % erreur)
+        return False
+    pas = 8
+    lignes = []
+    for rangee in grille:
+        ligne = b''.join((b'\x00' if case else b'\xff') * pas for case in rangee)
+        lignes.extend([ligne] * pas)
+    with open(fichier, 'wb') as sortie:
+        sortie.write(png(lignes))
+    return True
+
+
+PAGE_TELEPHONE = """<!doctype html><html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Identifiants Catch-up TV</title>
+<style>body{font:17px/1.4 system-ui,sans-serif;margin:0;padding:20px;background:#14131c;color:#f0eef8}
+h1{font-size:22px;margin:0 0 6px}p{color:#aaa6bd;margin:0 0 18px}fieldset{border:1px solid #33304a;border-radius:10px;margin:0 0 14px;padding:12px}
+legend{font-weight:700;padding:0 6px}label{display:block;font-size:14px;color:#aaa6bd;margin-top:8px}
+input{width:100%%;box-sizing:border-box;font:inherit;padding:10px;border-radius:8px;border:1px solid #4a4666;background:#1d1b29;color:inherit}
+button{width:100%%;font:inherit;font-weight:700;padding:14px;border:0;border-radius:10px;background:#7b5cf0;color:#fff}
+.ok{background:#17402a;border-radius:10px;padding:14px;margin-bottom:18px}</style></head><body>
+<h1>Identifiants Catch-up TV</h1><p>Ils sont enregistrés sur ton appareil Kodi, nulle part ailleurs. Laisse un mot de passe vide pour garder celui déjà enregistré.</p>
+%(message)s<form method="post">%(champs)s<button type="submit">Enregistrer</button></form></body></html>"""
+
+
+def identifiants_par_telephone():
+    """Affiche une adresse (et son QR code) à ouvrir sur un téléphone du même
+    réseau : une page y demande les identifiants et les enregistre dans les
+    réglages de Catch-up TV du profil ouvert. Le serveur ne vit que le temps
+    de la fenêtre, et son adresse contient un code tiré au hasard."""
+    catchup = xbmcaddon.Addon(CATCHUP)
+    jeton = '%06d' % random.randrange(10 ** 6)
+
+    class Page(BaseHTTPRequestHandler):
+        def log_message(self, *arguments):
+            pass
+
+        def repondre(self, message=''):
+            champs = ''
+            for nom, cle in COMPTES:
+                champs += ('<fieldset><legend>%s</legend><label>Adresse ou identifiant</label>'
+                           '<input name="%s.login" value="%s" autocapitalize="none" autocomplete="off">'
+                           '<label>Mot de passe</label><input name="%s.password" type="password" autocomplete="off"></fieldset>'
+                           % (html.escape(nom), cle, html.escape(catchup.getSetting(cle + '.login'), quote=True), cle))
+            corps = (PAGE_TELEPHONE % {'message': message, 'champs': champs}).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Length', str(len(corps)))
+            self.end_headers()
+            self.wfile.write(corps)
+
+        def autorise(self):
+            if self.path.strip('/') == jeton:
+                return True
+            self.send_error(404)
+            return False
+
+        def do_GET(self):
+            if self.autorise():
+                self.repondre()
+
+        def do_POST(self):
+            if not self.autorise():
+                return
+            saisie = parse_qs(self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode('utf-8'), keep_blank_values=True)
+            for _, cle in COMPTES:
+                compte = (saisie.get(cle + '.login') or [''])[0].strip()
+                mot_de_passe = (saisie.get(cle + '.password') or [''])[0]
+                if compte != catchup.getSetting(cle + '.login'):
+                    catchup.setSetting(cle + '.login', compte)
+                    if not compte:
+                        catchup.setSetting(cle + '.password', '')
+                if mot_de_passe:
+                    catchup.setSetting(cle + '.password', mot_de_passe)
+            self.repondre('<div class="ok">Enregistré. Tu peux fermer cette page et appuyer sur Retour sur Kodi.</div>')
+
+    serveur = None
+    for port in range(8765, 8771):
+        try:
+            serveur = HTTPServer(('', port), Page)
+            break
+        except OSError:
+            continue
+    if serveur is None:
+        dialog.ok(TITRE, "Impossible d'ouvrir la page de saisie sur cet appareil.")
+        return
+    adresse = 'http://%s:%s/%s' % (xbmc.getIPAddress(), serveur.server_address[1], jeton)
+    threading.Thread(target=serveur.serve_forever, daemon=True).start()
+    try:
+        dossier = os.path.join(ADDON_DATA, 'script.dark-prophet')
+        os.makedirs(dossier, exist_ok=True)
+        fond, qr = os.path.join(dossier, 'fond-saisie.png'), os.path.join(dossier, 'qr.png')
+        with open(fond, 'wb') as sortie:
+            sortie.write(png([b'\x12' * 4] * 4))
+
+        class Fenetre(xbmcgui.WindowDialog):
+            def onAction(self, action):
+                self.close()
+
+        fenetre = Fenetre()
+        fenetre.addControl(xbmcgui.ControlImage(0, 0, 1280, 720, fond))
+        fenetre.addControl(xbmcgui.ControlLabel(90, 150, 600, 50, 'Identifiants Catch-up TV', textColor='0xFFFFFFFF'))
+        zone = xbmcgui.ControlTextBox(90, 220, 600, 320, textColor='0xFFDDDDDD')
+        fenetre.addControl(zone)
+        zone.setText("Sur un téléphone connecté au même Wi-Fi, ouvre cette adresse%s :[CR][CR][B]%s[/B][CR][CR]"
+                     "Saisis tes identifiants, valide, puis appuie sur Retour ici."
+                     % (' ou scanne le code' if image_qr(adresse, qr) else '', adresse))
+        if os.path.isfile(qr):
+            fenetre.addControl(xbmcgui.ControlImage(780, 160, 400, 400, qr))
+        fenetre.doModal()
+        del fenetre
+    finally:
+        serveur.shutdown()
+        serveur.server_close()
+        for fichier in ('qr.png',):
+            try:
+                os.remove(os.path.join(ADDON_DATA, 'script.dark-prophet', fichier))
+            except OSError:
+                pass
 
 
 # --- Sauvegarde et export ---------------------------------------------------
@@ -1001,19 +1151,30 @@ ERREURS_GITHUB = {
 }
 
 
-def rechercher():
-    """Recherche par titre limitée au catalogue d'alkoFlix, films et séries
-    confondus : on ne propose que ce qui a des liens. La recherche par titre
-    d'alkoFlix, elle, interroge tout TMDb ; seul son mode « Découvrir » sait
-    filtrer, on lui passe donc une recherche TMDb. Lancée par les rubriques
-    « Rechercher » des pages (RunScript(script.dark-prophet,recherche))."""
-    mot = dialog.input('Rechercher dans alkoFlix').strip()
+def rechercher(genre='', sections=''):
+    """Recherche par titre limitée au catalogue d'alkoFlix : on ne propose que
+    ce qui a des liens. Lancée par les rubriques « Rechercher » des pages :
+    RunScript(script.dark-prophet,recherche,<movie|tv>,<sections du catalogue>).
+    La recherche par titre d'alkoFlix interroge tout TMDb ; seules ses listes
+    « Découvrir » respectent le catalogue, on leur passe donc une recherche
+    TMDb. Le filtre par section est celui de « Parce que vous avez regardé »."""
+    titres = {'movie': 'Rechercher un film', 'tv': 'Rechercher une série'}
+    mot = dialog.input(titres.get(genre, 'Rechercher dans alkoFlix')).strip()
     if not mot:
         return
     cle = xbmcaddon.Addon(ALKOFLIX).getSetting('tmdb_api')
-    tmdb = 'https://api.themoviedb.org/3/search/%s?api_key=' + cle + '&language=fr-FR&query=' + quote(mot) + '&page=%%s'
-    chemin = ('plugin://%s/?mode=discover.combined_results&movie_query=%s&tv_query=%s&name=%s&catalogue_only=true'
-              % (ALKOFLIX, quote(tmdb % 'movie', safe=''), quote(tmdb % 'tv', safe=''), quote('Recherche : ' + mot)))
+    tmdb = 'https://api.themoviedb.org/3/search/%s?api_key=' + cle + '&language=fr-FR&page=%%s&query=' + quote(mot)
+    nom = quote('Recherche : ' + mot)
+    if genre in titres:
+        mode, action = (('build_movie_list', 'tmdb_movies_discover') if genre == 'movie'
+                        else ('build_tvshow_list', 'tmdb_tv_discover'))
+        chemin = 'plugin://%s/?mode=%s&action=%s&catalogue_only=true&name=%s' % (ALKOFLIX, mode, action, nom)
+        if sections:
+            chemin += '&because_you_watched=true&recommendation_group=all&recommendation_catalogue_section=' + quote(sections)
+        chemin += '&query=' + quote(tmdb % genre, safe='')
+    else:
+        chemin = ('plugin://%s/?mode=discover.combined_results&movie_query=%s&tv_query=%s&name=%s&catalogue_only=true'
+                  % (ALKOFLIX, quote(tmdb % 'movie', safe=''), quote(tmdb % 'tv', safe=''), nom))
     xbmc.executebuiltin('ActivateWindow(Videos,"%s",return)' % chemin)
 
 
@@ -1050,6 +1211,6 @@ def menu():
 
 if __name__ == '__main__':
     if sys.argv[1:2] == ['recherche']:
-        rechercher()
+        rechercher(*sys.argv[2:4])
     else:
         menu()

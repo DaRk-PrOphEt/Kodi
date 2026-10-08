@@ -29,7 +29,8 @@ extension sur l'écran de choix, et ajoutent au menu Options un bouton pour pass
 profil à l'autre.
 
 Les identifiants de replay (TF1+, M6+…) se saisissent depuis le menu du script, dans
-le profil Catch-up TV. Ils restent sur l'appareil.
+le profil Catch-up TV, à la télécommande ou depuis un téléphone du même réseau (le
+script affiche une adresse et son QR code). Ils restent sur l'appareil.
 
 Le script installe lui-même les dépôts officiels dont il a besoin (Kodi refuse de les
 installer comme dépendances).
