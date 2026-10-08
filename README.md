@@ -40,13 +40,12 @@ les formules demandent « Quel appareil ? » et l'appliquent aux boîtiers modes
 Depuis le profil alkoFlix, l'export et la publication demandent quelle interface
 (complète ou allégée) on vient de régler.
 
-Pour publier un pack : régler l'habillage dans le profil voulu, puis lancer le script
-depuis ce profil.
+« Réinitialiser les réglages » défait l'installation : habillage et réglages d'avant,
+plus de profil Catch-up TV ni d'écran de choix. Les extensions restent installées.
 
-- « Publier la configuration de ce profil sur le dépôt » l'envoie directement dans
-  `packs/`. L'entrée n'apparaît que si un jeton GitHub est saisi dans les paramètres
-  de l'extension (jeton limité à ce dépôt, permission « Contents : Read and write »).
-- Sinon « Exporter » fabrique le zip, à déposer à la main dans `packs/`.
+Les packs de `packs/` sont fabriqués hors de Kodi ; le script ne propose plus de les
+exporter. « Publier la configuration de ce profil » reste disponible pour qui a saisi un
+jeton GitHub dans les paramètres de l'extension, et remplace alors le pack en ligne.
 
 ## Mettre à jour
 

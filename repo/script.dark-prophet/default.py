@@ -101,6 +101,12 @@ LOGOS = {PROFIL_ALKOFLIX: 'special://home/addons/%s/icon.png' % ALKOFLIX,
 FICHIER_PROFILS = os.path.join(MAITRE, 'profiles.xml')
 # Tant que ce fichier existe, profiles.xml est protégé en écriture (voir poser_logos).
 VERROU_PROFILS = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'profils_verrouilles')
+# Dossiers de profils à effacer une fois Kodi redémarré (voir reinitialiser).
+PROFILS_A_EFFACER = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'profils_a_effacer')
+# Réglages de Kodi relevés avant la première installation, pour pouvoir les remettre.
+ETAT_AVANT = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'etat_avant.json')
+REGLAGES_KODI = ('lookandfeel.skin', 'lookandfeel.soundskin', 'locale.keyboardlayouts', 'locale.country',
+                 'addons.updatemode', 'locale.language')   # la langue en dernier : Kodi recharge tout
 
 # Écran « Profils » de Kodi : identifiants fixés par Kodi, les mêmes dans tous les habillages.
 LISTE_PROFILS = 2
@@ -327,7 +333,12 @@ def ecrire_pack(archive, racine):
 
 
 def sauvegarder_actuel():
-    shutil.rmtree(SAUVEGARDE, ignore_errors=True)
+    """Copie des réglages d'habillage d'AVANT la première installation : c'est
+    elle que « Réinitialiser les réglages » remet. On ne la remplace donc pas
+    aux installations et mises à jour suivantes."""
+    if os.path.isdir(SAUVEGARDE):
+        return
+    os.makedirs(SAUVEGARDE)
     for dossier in DOSSIERS:
         source = os.path.join(ADDON_DATA, dossier)
         if os.path.isdir(source):
@@ -658,6 +669,14 @@ def lever_verrou_profils():
             return
         os.chmod(FICHIER_PROFILS, 0o644)
         os.remove(VERROU_PROFILS)
+        if os.path.isfile(PROFILS_A_EFFACER):
+            # Kodi ne connaît plus ces profils : leurs dossiers (réglages, identifiants) peuvent partir.
+            racine = os.path.join(MAITRE, 'profiles')
+            for nom in open(PROFILS_A_EFFACER, encoding='utf-8').read().splitlines():
+                dossier = os.path.normpath(os.path.join(MAITRE, nom))
+                if nom and dossier.startswith(racine + os.sep):
+                    shutil.rmtree(dossier, ignore_errors=True)
+            os.remove(PROFILS_A_EFFACER)
     except OSError as erreur:
         log('verrou des profils : %r' % erreur)
 
@@ -709,8 +728,9 @@ GUIDE_PROFIL = (
 # --- Les deux formules ------------------------------------------------------
 
 def formule_alkoflix():
-    if not dialog.yesno(TITRE, "Installer Arctic Fuse 3 et alkoFlix avec la configuration de DaRk-PrOphEt ?[CR]Kodi passera en français. Les réglages actuels de cet habillage seront remplacés (une copie est gardée)."):
+    if not dialog.yesno(TITRE, "Installer Arctic Fuse 3 et alkoFlix avec la configuration de DaRk-PrOphEt ?[CR]Kodi passera en français. Les réglages actuels de cet habillage seront remplacés (« Réinitialiser les réglages » les remet)."):
         return
+    noter_etat_avant()
     if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES)):
         return
     franciser()
@@ -725,8 +745,9 @@ def formule_alkoflix():
 
 
 def formule_catchup():
-    if not dialog.yesno(TITRE, "Installer Arctic Fuse 3, alkoFlix et Catch-up TV ?[CR]Au démarrage, Kodi proposera deux entrées : « %s » et « %s ».[CR]Kodi passera en français. Les réglages actuels de l'habillage seront remplacés (une copie est gardée)." % (PROFIL_ALKOFLIX, PROFIL_CATCHUP)):
+    if not dialog.yesno(TITRE, "Installer Arctic Fuse 3, alkoFlix et Catch-up TV ?[CR]Au démarrage, Kodi proposera deux entrées : « %s » et « %s ».[CR]Kodi passera en français. Les réglages actuels de l'habillage seront remplacés (« Réinitialiser les réglages » les remet)." % (PROFIL_ALKOFLIX, PROFIL_CATCHUP)):
         return
+    noter_etat_avant()
     if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES, CATCHUP)):
         return
     franciser()
@@ -743,7 +764,7 @@ def mettre_a_jour():
     """Pour qui a déjà tout installé : repose la dernière interface publiée
     sur chaque profil et installe ce que les versions récentes ont ajouté
     (icônes, suggestions du clavier, clavier français)."""
-    if not dialog.yesno(TITRE, "Mettre l'interface à jour ?[CR]Les réglages actuels de l'habillage seront remplacés par la dernière version (une copie est gardée)."):
+    if not dialog.yesno(TITRE, "Mettre l'interface à jour ?[CR]Les réglages actuels de l'habillage seront remplacés par la dernière version (« Réinitialiser les réglages » les remet)."):
         return
     installer_tout((LANGUE, SONS, SAISIE, ICONES))
     franciser()
@@ -809,7 +830,7 @@ def preparer_profil_catchup(pack):
 
 
 def reappliquer_catchup():
-    if not dialog.yesno(TITRE, "Remettre la configuration Catch-up TV de DaRk-PrOphEt sur ce profil ?[CR]Les réglages actuels de l'habillage seront remplacés (une copie est gardée)."):
+    if not dialog.yesno(TITRE, "Remettre la configuration Catch-up TV de DaRk-PrOphEt sur ce profil ?[CR]Les réglages actuels de l'habillage seront remplacés (« Réinitialiser les réglages » les remet)."):
         return
     archive = telecharger_pack(PACK_CATCHUP)
     if archive is None:
@@ -1001,25 +1022,104 @@ def identifiants_par_telephone():
                 pass
 
 
-# --- Sauvegarde et export ---------------------------------------------------
+# --- Réinitialisation et fabrication des packs -------------------------------
 
-def restaurer_avant():
-    if not os.path.isdir(SAUVEGARDE):
-        dialog.ok(TITRE, "Aucune copie des réglages d'avant sur ce profil.")
+def noter_etat_avant():
+    """Relève, une seule fois, les réglages de Kodi que les formules vont changer."""
+    if os.path.isfile(ETAT_AVANT):
         return
-    if not dialog.yesno(TITRE, "Remettre les réglages d'avant l'installation ?"):
+    etat = {cle: (rpc('Settings.GetSettingValue', {'setting': cle}) or {}).get('value') for cle in REGLAGES_KODI}
+    etat['profil'] = (profils() or ['Master user'])[0]
+    os.makedirs(os.path.dirname(ETAT_AVANT), exist_ok=True)
+    with open(ETAT_AVANT, 'w', encoding='utf-8') as sortie:
+        json.dump(etat, sortie)
+
+
+def reinitialiser():
+    """Défait ce que les formules ont mis en place : habillage et réglages
+    d'avant, plus de profil Catch-up TV ni d'écran de choix. Les extensions
+    restent installées (Kodi n'a pas de commande pour les désinstaller)."""
+    avec_catchup = PROFIL_CATCHUP in profils()
+    if not dialog.yesno(TITRE, "Revenir à Kodi comme avant l'installation ?[CR]L'habillage et les réglages d'avant sont remis%s.[CR]Les extensions restent installées."
+                        % (", le profil « %s » est supprimé avec ses identifiants" % PROFIL_CATCHUP if avec_catchup else '')):
         return
+    etat = {}
+    if os.path.isfile(ETAT_AVANT):
+        try:
+            with open(ETAT_AVANT, encoding='utf-8') as source:
+                etat = json.load(source)
+        except (OSError, ValueError) as erreur:
+            log('état d\'avant : %r' % erreur)
+    avant = etat.get('lookandfeel.skin') or SKIN_SECOURS
+    if avant == SKIN and not os.path.isdir(SAUVEGARDE):
+        avant = SKIN_SECOURS
+    # 1. On quitte Arctic Fuse 3 (Kodi réécrit les réglages de l'habillage actif en le quittant),
+    #    on remet ses réglages d'avant, puis on revient à l'habillage d'avant.
+    if xbmc.getSkinDir() == SKIN and not changer_habillage(SKIN_SECOURS):
+        dialog.ok(TITRE, "Impossible de quitter l'habillage. Change-le dans Paramètres > Interface, puis relance.")
+        return
+    for dossier in DOSSIERS:
+        cible = os.path.join(ADDON_DATA, dossier)
+        shutil.rmtree(cible, ignore_errors=True)
+        source = os.path.join(SAUVEGARDE, dossier)
+        if os.path.isdir(source):
+            shutil.copytree(source, cible)
+    changer_habillage(avant)
+    # 2. Les réglages de Kodi relevés avant la première installation (absents si elle date d'une ancienne version).
+    for cle in REGLAGES_KODI[1:]:
+        if cle in etat and etat[cle] is not None:
+            if regler(cle, etat[cle]) and cle == 'locale.language':
+                xbmc.sleep(4000)
+    # 3. Les profils : un seul, sans écran de choix. Même méthode que pour les logos.
+    redemarrer = remettre_profil_unique(etat.get('profil') or 'Master user')
+    # 4. Ce que le script avait noté pour lui-même.
+    shutil.rmtree(SAUVEGARDE, ignore_errors=True)
+    images = [os.path.join(DOSSIER_FONDS, fichier) for _, fichier in FONDS] + [os.path.join(DOSSIER_FONDS, 'fond-saisie.png')]
+    for fichier in [ETAT_AVANT, FICHIER_INTERFACE, FICHIER_FOND] + images:
+        try:
+            os.remove(fichier)
+        except OSError:
+            pass
+    annoncer("C'est réinitialisé.%s" % ("[CR]Redémarre Kodi pour retirer l'écran de choix et le profil « %s »." % PROFIL_CATCHUP if redemarrer else ''))
 
-    def remettre():
-        for dossier in DOSSIERS:
-            cible = os.path.join(ADDON_DATA, dossier)
-            shutil.rmtree(cible, ignore_errors=True)
-            source = os.path.join(SAUVEGARDE, dossier)
-            if os.path.isdir(source):
-                shutil.copytree(source, cible)
 
-    hors_de_l_habillage(remettre)
-    annoncer("Réglages d'avant remis en place.")
+def remettre_profil_unique(nom):
+    """Ne garde que le profil principal, sous son nom d'avant, sans écran de
+    choix ni logo. Renvoie True si profiles.xml a changé (redémarrage nécessaire)."""
+    try:
+        arbre = ElementTree.parse(FICHIER_PROFILS)
+        racine = arbre.getroot()
+        a_effacer, change = [], False
+        for profil in list(racine.iter('profile')):
+            if profil.findtext('id') != '0':
+                a_effacer.append((profil.findtext('directory') or '').strip('/'))
+                racine.remove(profil)
+                change = True
+                continue
+            for balise, valeur in (('name', nom), ('thumbnail', '')):
+                element = profil.find(balise)
+                if element is not None and (element.text or '') != valeur and (balise != 'thumbnail' or (element.text or '') in LOGOS.values()):
+                    element.text = valeur
+                    change = True
+        for balise, valeur in (('useloginscreen', 'false'), ('lastloaded', '0'), ('autologin', '-1')):
+            element = racine.find(balise)
+            if element is not None and element.text != valeur:
+                element.text = valeur
+                change = True
+        if not change:
+            return False
+        os.chmod(FICHIER_PROFILS, 0o644)
+        arbre.write(FICHIER_PROFILS, encoding='utf-8')
+        os.chmod(FICHIER_PROFILS, 0o444)
+        os.makedirs(os.path.dirname(VERROU_PROFILS), exist_ok=True)
+        with open(PROFILS_A_EFFACER, 'w', encoding='utf-8') as sortie:
+            sortie.write('\n'.join(a_effacer))
+        with open(VERROU_PROFILS, 'w') as sortie:
+            sortie.write(str(os.getpid()))
+        return True
+    except (OSError, ElementTree.ParseError) as erreur:
+        log('profils : %r' % erreur)
+        return False
 
 
 def fabriquer_pack():
@@ -1057,29 +1157,6 @@ def pack_du_profil_ouvert():
         return PACK_CATCHUP
     choix = dialog.select('Quelle interface as-tu réglée ?', ['Interface complète', 'Interface allégée (boîtiers modestes)'])
     return (PACK_ALKOFLIX, PACK_LEGER)[choix] if choix >= 0 else None
-
-
-def exporter_config():
-    """Enregistre le pack du profil ouvert dans un dossier (à faire sur l'appareil déjà configuré)."""
-    nom_pack = pack_du_profil_ouvert()
-    if not nom_pack:
-        return
-    dossier = dialog.browse(3, 'Où enregistrer %s ?' % nom_pack, 'files')
-    if not dossier:
-        return
-    contenu, nombre = fabriquer_pack()
-    if not nombre:
-        dialog.ok(TITRE, "Aucun réglage d'Arctic Fuse 3 trouvé sur ce profil.")
-        return
-    # xbmcvfs sait écrire sur un partage réseau ou une clé USB, pas open().
-    cible = dossier + nom_pack
-    sortie = xbmcvfs.File(cible, 'w')
-    reussi = sortie.write(bytearray(contenu))
-    sortie.close()
-    if reussi:
-        dialog.ok(TITRE, 'Pack enregistré (%s fichiers) :[CR]%s' % (nombre, cible))
-    else:
-        dialog.ok(TITRE, "Écriture impossible dans ce dossier.")
 
 
 # --- Publication sur le dépôt (propriétaire seulement) -----------------------
@@ -1192,15 +1269,13 @@ def menu():
             entrees.insert(0, ("Mettre l'interface à jour", mettre_a_jour))
         entrees += [
             ('Mes identifiants Catch-up TV', identifiants_catchup),
-            ("Remettre mes réglages d'avant", restaurer_avant),
-            ('Exporter la configuration alkoFlix de cet appareil', exporter_config),
+            ('Réinitialiser les réglages', reinitialiser),
         ]
     else:
+        # La réinitialisation supprime ce profil : elle se lance depuis le profil principal.
         entrees = [
             ('Mes identifiants Catch-up TV', identifiants_catchup),
             ('Remettre la configuration Catch-up TV', reappliquer_catchup),
-            ("Remettre mes réglages d'avant", restaurer_avant),
-            ('Exporter la configuration Catch-up TV de ce profil', exporter_config),
         ]
     if jeton_de_publication():
         entrees.append(('Publier la configuration de ce profil sur le dépôt', publier_config))

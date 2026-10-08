@@ -99,7 +99,7 @@
       </assets>
     </extension>
   </addon>
-  <addon id="script.dark-prophet" name="DaRk-PrOphEt" version="1.10.0" provider-name="DaRk-PrOphEt">
+  <addon id="script.dark-prophet" name="DaRk-PrOphEt" version="1.11.0" provider-name="DaRk-PrOphEt">
     <requires>
       <import addon="xbmc.python" version="3.0.1" />
       <import addon="script.module.qrcode" version="6.1.0" optional="true" />
