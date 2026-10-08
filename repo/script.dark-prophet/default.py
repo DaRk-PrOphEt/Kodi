@@ -690,7 +690,8 @@ def activer_ecran_de_choix():
 
 
 def poser_logos():
-    """Donne à chaque profil le logo de son extension sur l'écran de choix.
+    """Donne à chaque profil le logo de son extension sur l'écran de choix, et
+    son nom au profil principal.
     Kodi n'a aucune commande pour l'image d'un profil et réécrit profiles.xml
     en se fermant : on inscrit donc les logos dans le fichier, puis on le
     protège en écriture. Au démarrage suivant Kodi le relit, et service.py
@@ -698,8 +699,18 @@ def poser_logos():
     try:
         arbre = ElementTree.parse(FICHIER_PROFILS)
         change = False
-        for profil in arbre.getroot().iter('profile'):
-            logo, vignette = LOGOS.get(profil.findtext('name')), profil.find('thumbnail')
+        profils_connus = list(arbre.getroot().iter('profile'))
+        avec_catchup = any(profil.findtext('name') == PROFIL_CATCHUP for profil in profils_connus)
+        for profil in profils_connus:
+            principal = profil.findtext('id') == '0'
+            nom = profil.find('name')
+            # Le profil principal prend son nom ici aussi : le renommage par l'écran des profils
+            # échoue sur certains appareils, et ce fichier est de toute façon relu au redémarrage.
+            if principal and avec_catchup and nom is not None and nom.text != PROFIL_ALKOFLIX:
+                nom.text = PROFIL_ALKOFLIX
+                change = True
+            logo = LOGOS[PROFIL_ALKOFLIX] if principal and avec_catchup else LOGOS.get(profil.findtext('name'))
+            vignette = profil.find('thumbnail')
             # On ne remplace pas une image que quelqu'un a choisie.
             if logo and vignette is not None and not (vignette.text or '').strip():
                 vignette.text = logo
