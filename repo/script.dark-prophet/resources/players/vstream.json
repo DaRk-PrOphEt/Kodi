@@ -1,0 +1,21 @@
+{
+  "name": "vStream",
+  "plugin": "plugin.video.vstream",
+  "priority": 300,
+  "assert": {
+    "search_movie": ["title"],
+    "search_episode": ["showname"]
+  },
+
+  "search_movie": [
+    "plugin://plugin.video.vstream/?site=cHome&function=showSearchText&title=Films&sCat=1&sFav={title_url}",
+    { "keyboard": "{title}" },
+    { "dialog": "true" }
+  ],
+
+  "search_episode": [
+    "plugin://plugin.video.vstream/?site=cHome&function=showSearchText&title=Séries&sCat=2",
+    { "keyboard": "{showname}" },
+    { "dialog": "true" }
+  ]
+}

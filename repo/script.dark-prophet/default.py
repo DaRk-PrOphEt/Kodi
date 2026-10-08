@@ -30,6 +30,7 @@ SKIN = 'skin.arctic.fuse.3'
 SKIN_SECOURS = 'skin.estuary'
 ALKOFLIX = 'plugin.video.alkoflix'
 CATCHUP = 'plugin.video.catchuptvandmore'
+VSTREAM = 'plugin.video.vstream'   # version « Full » seulement : le secours quand alkoFlix n'a pas de lien
 LANGUE = 'resource.language.fr_fr'
 SONS = 'resource.uisounds.androidtv'
 # Icônes des menus d'alkoFlix : les packs de réglages s'en servent, mais
@@ -45,7 +46,9 @@ NOMS = {SKIN: 'Arctic Fuse 3', ALKOFLIX: 'alkoFlix', CATCHUP: 'Catch-up TV & Mor
         SAISIE: 'les suggestions du clavier'}
 # Dépôt officiel de chaque extension. Le script les installe lui-même : Kodi
 # refuse d'installer un dépôt en tant que dépendance d'une autre extension.
-DEPOTS = {SKIN: 'repository.jurialmunkey', ALKOFLIX: 'repository.alkoflix', CATCHUP: 'catchuptvandmore.kodi.release'}
+DEPOTS = {SKIN: 'repository.jurialmunkey', ALKOFLIX: 'repository.alkoflix', CATCHUP: 'catchuptvandmore.kodi.release',
+          VSTREAM: 'repository.vstream'}
+NOMS.update({VSTREAM: 'vStream', 'repository.vstream': 'le dépôt de vStream'})
 NOMS.update({'repository.jurialmunkey': "le dépôt d'Arctic Fuse 3", 'repository.alkoflix': "le dépôt d'alkoFlix",
              'catchuptvandmore.kodi.release': 'le dépôt de Catch-up TV'})
 # Le confort : si l'un d'eux ne s'installe pas, la formule continue quand même.
@@ -117,7 +120,9 @@ PROFILS_A_EFFACER = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'p
 # Réglages de Kodi relevés avant la première installation, pour pouvoir les remettre.
 ETAT_AVANT = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'etat_avant.json')
 REGLAGES_KODI = ('lookandfeel.skin', 'lookandfeel.soundskin', 'locale.keyboardlayouts', 'locale.country',
-                 'addons.updatemode', 'locale.language')   # la langue en dernier : Kodi recharge tout
+                 'addons.updatemode', 'locale.audiolanguage', 'videoplayer.preferdefaultflag',
+                 'locale.subtitlelanguage', 'subtitles.languages',
+                 'locale.language')   # la langue en dernier : Kodi recharge tout
 
 # Écran « Profils » de Kodi : identifiants fixés par Kodi, les mêmes dans tous les habillages.
 LISTE_PROFILS = 2
@@ -250,13 +255,21 @@ def regler(reglage, valeur):
 
 
 def franciser():
-    """Kodi en français (langue, formats de date et d'heure, clavier AZERTY) avec les sons d'Android TV."""
+    """Kodi en français (langue, formats de date et d'heure, clavier AZERTY, audio et
+    sous-titres à la lecture) avec les sons d'Android TV."""
     if installe(LANGUE) and regler('locale.language', LANGUE):
         # Kodi recharge ses textes et l'habillage.
         xbmc.sleep(4000)
         regler('locale.country', 'France')
         xbmc.sleep(1000)
     regler('locale.keyboardlayouts', ['French AZERTY'])
+    # Lecture : la piste audio française plutôt que celle marquée « par défaut » dans le
+    # fichier (souvent l'anglais), et seulement les sous-titres forcés (passages en langue
+    # étrangère), pas des sous-titres complets.
+    regler('locale.audiolanguage', 'French')
+    regler('videoplayer.preferdefaultflag', False)
+    regler('locale.subtitlelanguage', 'forced_only')
+    regler('subtitles.languages', ['French'])
     if installe(SONS):
         regler('lookandfeel.soundskin', SONS)
 
@@ -300,24 +313,35 @@ def telecharger_pack(nom, muet=False):
     return None
 
 
-def telecharger_pack_alkoflix(redemander=True):
-    """Le pack du profil alkoFlix. Si une interface allégée est publiée, on
-    demande laquelle installer ; sinon la question n'est pas posée. Le choix
-    est retenu : avec redemander=False (mise à jour), on le reprend."""
-    leger = telecharger_pack(PACK_LEGER, muet=True)
-    if leger is None:
-        return telecharger_pack(PACK_ALKOFLIX)
+VERSIONS = (('leger', 'Allégée : pour les boîtiers modestes'),
+            ('complet', 'Base : interface complète'),
+            ('full', 'Full : Base + vStream'))
+
+
+def choisir_version(redemander=True):
+    """Version à installer sur le profil alkoFlix : « leger », « complet » (la
+    Base) ou « full ». Le choix est retenu : avec redemander=False (mise à
+    jour), on le reprend sans reposer la question."""
     choix = ''
     if not redemander and os.path.isfile(FICHIER_INTERFACE):
         choix = open(FICHIER_INTERFACE).read().strip()
-    if choix not in ('complet', 'leger'):
-        numero = dialog.select('Quel appareil ?', ['Appareil récent : interface complète',
-                                                   'Boîtier modeste : interface allégée'])
-        choix = 'leger' if numero == 1 else 'complet'
+    if choix not in [cle for cle, _ in VERSIONS]:
+        numero = dialog.select('Quelle version ?', [libelle for _, libelle in VERSIONS], preselect=1)
+        choix = VERSIONS[numero][0] if numero >= 0 else 'complet'
         os.makedirs(os.path.dirname(FICHIER_INTERFACE), exist_ok=True)
         with open(FICHIER_INTERFACE, 'w') as sortie:
             sortie.write(choix)
-    return leger if choix == 'leger' else telecharger_pack(PACK_ALKOFLIX)
+    return choix
+
+
+def telecharger_pack_alkoflix(version):
+    """Le pack du profil alkoFlix. La Full utilise celui de la Base : le
+    script y ajoute ce qui concerne vStream."""
+    if version == 'leger':
+        leger = telecharger_pack(PACK_LEGER, muet=True)
+        if leger is not None:
+            return leger
+    return telecharger_pack(PACK_ALKOFLIX)
 
 
 def membres_autorises(archive, racine):
@@ -366,9 +390,10 @@ def hors_de_l_habillage(action):
     return changer_habillage(SKIN)
 
 
-def appliquer_ici(archive, fond=None, bouton_catchup=None):
+def appliquer_ici(archive, fond=None, bouton_catchup=None, vstream=None):
     """Applique un pack au profil ouvert et active l'habillage.
-    bouton_catchup : True ou False pour ajuster le menu Options (profil alkoFlix seulement)."""
+    bouton_catchup, vstream : True ou False pour ajuster le menu Options et
+    les rubriques de l'accueil (profil alkoFlix seulement)."""
     if archive is None:
         return changer_habillage(SKIN)
 
@@ -379,6 +404,8 @@ def appliquer_ici(archive, fond=None, bouton_catchup=None):
             poser_fond(fond)
         if bouton_catchup is not None:
             ajuster_menu_options(bouton_catchup)
+        if vstream is not None:
+            ajuster_rubriques_vstream(vstream)
 
     return hors_de_l_habillage(appliquer)
 
@@ -400,6 +427,42 @@ def ajuster_menu_options(avec_catchup):
             json.dump(entrees, sortie, indent=4, ensure_ascii=False)
     except (OSError, ValueError) as erreur:
         log('menu Options : %r' % erreur)
+
+
+def ajuster_rubriques_vstream(avec):
+    """Rubriques de l'accueil (profil alkoFlix) : en version Full, le menu de
+    vStream et sa recherche, qui trouve aussi les titres absents du catalogue
+    d'alkoFlix."""
+    fichier = os.path.join(ADDON_DATA, 'script.skinvariables', 'nodes', SKIN, 'skinvariables-shortcut-homesubmenu.json')
+    try:
+        with open(fichier, encoding='utf-8') as source:
+            entrees = [e for e in json.load(source) if VSTREAM not in str(e.get('path', ''))]
+        if avec:
+            entrees += [
+                {'label': 'vStream', 'path': 'plugin://%s/' % VSTREAM, 'icon': 'special://skin/extras/icons/addon.png',
+                 'target': 'videos', 'guid': 'guid-dpvstream'},
+                {'label': 'Rechercher dans vStream', 'icon': 'special://skin/extras/icons/search.png', 'target': 'videos',
+                 'path': 'plugin://%s/?site=cHome&function=showMenuSearch&title=Recherche+directe&sFav=showMenuSearch' % VSTREAM,
+                 'guid': 'guid-dpvstreamr'}]
+        with open(fichier, 'w', encoding='utf-8') as sortie:
+            json.dump(entrees, sortie, indent=4, ensure_ascii=False)
+    except (OSError, ValueError) as erreur:
+        log('rubriques vStream : %r' % erreur)
+
+
+def relier_vstream(avec):
+    """En version Full, vStream devient un second lecteur de TMDb Helper : sur
+    une fiche, un appui long propose « Lire avec… ». alkoFlix reste le
+    lecteur par défaut. Le fichier vient des alKODIques (players.zip)."""
+    cible = os.path.join(ADDON_DATA, TMDBHELPER, 'players', 'vstream.json')
+    try:
+        if avec:
+            os.makedirs(os.path.dirname(cible), exist_ok=True)
+            shutil.copy(xbmcvfs.translatePath('special://home/addons/script.dark-prophet/resources/players/vstream.json'), cible)
+        elif os.path.isfile(cible):
+            os.remove(cible)
+    except OSError as erreur:
+        log('lecteur vStream : %r' % erreur)
 
 
 def relier_alkoflix():
@@ -800,14 +863,16 @@ GUIDE_PROFIL = (
 def formule_alkoflix():
     if not dialog.yesno(TITRE, "Installer Arctic Fuse 3 et alkoFlix avec la configuration de DaRk-PrOphEt ?[CR]Kodi passera en français. Les réglages actuels de cet habillage seront remplacés (« Réinitialiser les réglages » les remet)."):
         return
+    version = choisir_version()
     noter_etat_avant()
-    if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES)):
+    if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES) + ((VSTREAM,) if version == 'full' else ())):
         return
     franciser()
     relier_alkoflix()
+    relier_vstream(version == 'full')
     poser_images_habillage()
-    archive = telecharger_pack_alkoflix()
-    if not appliquer_ici(archive, choisir_fond(), PROFIL_CATCHUP in profils()):
+    archive = telecharger_pack_alkoflix(version)
+    if not appliquer_ici(archive, choisir_fond(), PROFIL_CATCHUP in profils(), version == 'full'):
         dialog.ok(TITRE, "Réglages copiés, mais l'habillage n'a pas pu être activé.[CR]Active Arctic Fuse 3 dans Paramètres > Interface.")
     elif archive is None:
         annoncer("Arctic Fuse 3 et alkoFlix sont installés.[CR]La configuration n'est pas encore publiée : l'habillage garde ses réglages.")
@@ -818,15 +883,17 @@ def formule_alkoflix():
 def formule_catchup():
     if not dialog.yesno(TITRE, "Installer Arctic Fuse 3, alkoFlix et Catch-up TV ?[CR]Au démarrage, Kodi proposera deux entrées : « %s » et « %s ».[CR]Kodi passera en français. Les réglages actuels de l'habillage seront remplacés (« Réinitialiser les réglages » les remet)." % (PROFIL_ALKOFLIX, PROFIL_CATCHUP)):
         return
+    version = choisir_version()
     noter_etat_avant()
-    if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES, CATCHUP)):
+    if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES, CATCHUP) + ((VSTREAM,) if version == 'full' else ())):
         return
     franciser()
-    pack_alkoflix = telecharger_pack_alkoflix()
+    pack_alkoflix = telecharger_pack_alkoflix(version)
     pack_catchup = telecharger_pack(PACK_CATCHUP, muet=True) or pack_alkoflix
     relier_alkoflix()
+    relier_vstream(version == 'full')
     poser_images_habillage()
-    if not appliquer_ici(pack_alkoflix, choisir_fond(), True):
+    if not appliquer_ici(pack_alkoflix, choisir_fond(), True, version == 'full'):
         dialog.ok(TITRE, "L'habillage n'a pas pu être activé.[CR]Active Arctic Fuse 3 dans Paramètres > Interface, puis relance.")
         return
     preparer_profil_catchup(pack_catchup)
@@ -838,9 +905,11 @@ def mettre_a_jour():
     (icônes, suggestions du clavier, clavier français)."""
     if not dialog.yesno(TITRE, "Mettre l'interface à jour ?[CR]Les réglages actuels de l'habillage seront remplacés par la dernière version (« Réinitialiser les réglages » les remet)."):
         return
-    installer_tout((LANGUE, SONS, SAISIE, ICONES))
+    version = choisir_version(redemander=False)
+    if not installer_tout((LANGUE, SONS, SAISIE, ICONES) + ((VSTREAM,) if version == 'full' else ())):
+        return
     franciser()
-    archive = telecharger_pack_alkoflix(redemander=False)
+    archive = telecharger_pack_alkoflix(version)
     if archive is None:
         return
     logos = False
@@ -853,8 +922,9 @@ def mettre_a_jour():
             poser_fond(fond, os.path.join(dossier, 'addon_data'))
         logos = poser_logos()
     relier_alkoflix()
+    relier_vstream(version == 'full')
     poser_images_habillage()
-    if appliquer_ici(archive, choisir_fond(redemander=False), PROFIL_CATCHUP in profils()):
+    if appliquer_ici(archive, choisir_fond(redemander=False), PROFIL_CATCHUP in profils(), version == 'full'):
         if logos:
             annoncer("L'interface est à jour.[CR]Redémarre Kodi : les profils auront leur logo sur l'écran de choix.")
         else:

@@ -35,10 +35,12 @@ script affiche une adresse et son QR code). Ils restent sur l'appareil.
 Le script installe lui-même les dépôts officiels dont il a besoin (Kodi refuse de les
 installer comme dépendances).
 
-Si `packs/arctic-fuse-3-leger.zip` existe (même interface, moins de rangées par page),
-les formules demandent « Quel appareil ? » et l'appliquent aux boîtiers modestes.
-Depuis le profil alkoFlix, l'export et la publication demandent quelle interface
-(complète ou allégée) on vient de régler.
+Chaque formule demande la version à installer sur le profil alkoFlix :
+
+- **Allégée** (`packs/arctic-fuse-3-leger.zip`) : une rangée par page, pour les boîtiers modestes ;
+- **Base** (`packs/arctic-fuse-3.zip`) : l'interface complète ;
+- **Full** : la Base, plus vStream (dépôt officiel) en rubrique sur l'accueil et en second
+  lecteur de TMDb Helper (fichier `vstream.json` des alKODIques).
 
 « Réinitialiser les réglages » défait l'installation : habillage et réglages d'avant,
 plus de profil Catch-up TV ni d'écran de choix. Les extensions restent installées.
