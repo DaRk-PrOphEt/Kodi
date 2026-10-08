@@ -6,9 +6,11 @@ import os
 import re
 import shutil
 import sqlite3
+import sys
 import zipfile
 from io import BytesIO
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
@@ -999,6 +1001,22 @@ ERREURS_GITHUB = {
 }
 
 
+def rechercher():
+    """Recherche par titre limitée au catalogue d'alkoFlix, films et séries
+    confondus : on ne propose que ce qui a des liens. La recherche par titre
+    d'alkoFlix, elle, interroge tout TMDb ; seul son mode « Découvrir » sait
+    filtrer, on lui passe donc une recherche TMDb. Lancée par les rubriques
+    « Rechercher » des pages (RunScript(script.dark-prophet,recherche))."""
+    mot = dialog.input('Rechercher dans alkoFlix').strip()
+    if not mot:
+        return
+    cle = xbmcaddon.Addon(ALKOFLIX).getSetting('tmdb_api')
+    tmdb = 'https://api.themoviedb.org/3/search/%s?api_key=' + cle + '&language=fr-FR&query=' + quote(mot) + '&page=%%s'
+    chemin = ('plugin://%s/?mode=discover.combined_results&movie_query=%s&tv_query=%s&name=%s&catalogue_only=true'
+              % (ALKOFLIX, quote(tmdb % 'movie', safe=''), quote(tmdb % 'tv', safe=''), quote('Recherche : ' + mot)))
+    xbmc.executebuiltin('ActivateWindow(Videos,"%s",return)' % chemin)
+
+
 def menu():
     lever_verrou_profils()
     if dans_le_profil_principal():
@@ -1031,4 +1049,7 @@ def menu():
 
 
 if __name__ == '__main__':
-    menu()
+    if sys.argv[1:2] == ['recherche']:
+        rechercher()
+    else:
+        menu()
