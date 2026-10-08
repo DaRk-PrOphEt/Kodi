@@ -3,6 +3,7 @@ import base64
 import glob
 import json
 import os
+import re
 import shutil
 import sqlite3
 import zipfile
@@ -29,6 +30,8 @@ ICONES = 'resource.images.alkodicons.coal'
 # Suggestions du clavier : sans elle, Arctic Fuse 3 propose de l'installer à
 # chaque ouverture du clavier.
 SAISIE = 'plugin.program.autocompletion'
+TMDBHELPER = 'plugin.video.themoviedb.helper'
+LECTEUR = 'alkoflix.select.json'
 NOMS = {SKIN: 'Arctic Fuse 3', ALKOFLIX: 'alkoFlix', CATCHUP: 'Catch-up TV & More',
         LANGUE: 'la langue française', SONS: 'les sons Android TV', ICONES: "les icônes d'alkoFlix",
         SAISIE: 'les suggestions du clavier'}
@@ -78,6 +81,18 @@ FICHIER_JETON = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'jeton
 # Interface choisie à l'installation (« complet » ou « leger »), pour que la
 # mise à jour ne repose pas la question.
 FICHIER_INTERFACE = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'interface')
+
+# Fonds d'écran proposés pour le profil alkoFlix (une image fixe : aucun effet sur la fluidité).
+FONDS = (('Rouge', 'alkoflix-rouge.jpg'), ('Bleu', 'alkoflix-bleu.jpg'))
+FICHIER_FOND = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'fond')
+DOSSIER_FONDS = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet')
+
+# Image de chaque profil sur l'écran de choix : l'icône officielle de son extension.
+LOGOS = {PROFIL_ALKOFLIX: 'special://home/addons/%s/icon.png' % ALKOFLIX,
+         PROFIL_CATCHUP: 'special://home/addons/%s/icon.png' % CATCHUP}
+FICHIER_PROFILS = os.path.join(MAITRE, 'profiles.xml')
+# Tant que ce fichier existe, profiles.xml est protégé en écriture (voir poser_logos).
+VERROU_PROFILS = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'profils_verrouilles')
 
 # Écran « Profils » de Kodi : identifiants fixés par Kodi, les mêmes dans tous les habillages.
 LISTE_PROFILS = 2
@@ -321,16 +336,97 @@ def hors_de_l_habillage(action):
     return changer_habillage(SKIN)
 
 
-def appliquer_ici(archive):
-    """Applique un pack au profil ouvert et active l'habillage."""
+def appliquer_ici(archive, fond=None, bouton_catchup=None):
+    """Applique un pack au profil ouvert et active l'habillage.
+    bouton_catchup : True ou False pour ajuster le menu Options (profil alkoFlix seulement)."""
     if archive is None:
         return changer_habillage(SKIN)
 
     def appliquer():
         sauvegarder_actuel()
         log('%s fichiers écrits' % ecrire_pack(archive, ADDON_DATA))
+        if fond:
+            poser_fond(fond)
+        if bouton_catchup is not None:
+            ajuster_menu_options(bouton_catchup)
 
     return hors_de_l_habillage(appliquer)
+
+
+def ajuster_menu_options(avec_catchup):
+    """Menu Options d'Arctic Fuse 3 (profil alkoFlix) : un bouton pour passer au
+    profil Catch-up TV, seulement s'il existe. Le pack Catch-up TV porte déjà
+    le bouton du retour vers alkoFlix."""
+    fichier = os.path.join(ADDON_DATA, 'script.skinvariables', 'nodes', SKIN, 'skinvariables-shortcut-powermenu.json')
+    try:
+        with open(fichier, encoding='utf-8') as source:
+            entrees = [e for e in json.load(source) if not str(e.get('path', '')).startswith('LoadProfile(')]
+        if avec_catchup:
+            # Juste avant « Quitter », qui reste en dernier.
+            entrees.insert(max(len(entrees) - 1, 0), {
+                'icon': 'special://skin/extras/icons/livetv.png', 'label': PROFIL_CATCHUP,
+                'path': 'LoadProfile(%s)' % PROFIL_CATCHUP, 'target': '', 'guid': 'guid-dpcatchup'})
+        with open(fichier, 'w', encoding='utf-8') as sortie:
+            json.dump(entrees, sortie, indent=4, ensure_ascii=False)
+    except (OSError, ValueError) as erreur:
+        log('menu Options : %r' % erreur)
+
+
+def relier_alkoflix():
+    """Les fiches et la recherche d'Arctic Fuse 3 passent par TMDb Helper : sans
+    les lecteurs d'alkoFlix, un film choisi là ne propose que « Lire avec UPnP ».
+    On installe ces lecteurs (fournis par alkoFlix) et on prend celui qui
+    affiche la liste des liens comme lecteur par défaut."""
+    source = xbmcvfs.translatePath('special://home/addons/%s/resources/players/json/' % ALKOFLIX)
+    cible = os.path.join(ADDON_DATA, TMDBHELPER, 'players')
+    try:
+        lecteurs = [f for f in os.listdir(source) if f.endswith('.json')]
+        os.makedirs(cible, exist_ok=True)
+        for lecteur in lecteurs:
+            shutil.copy(os.path.join(source, lecteur), cible)
+        if LECTEUR in lecteurs:
+            reglages = xbmcaddon.Addon(TMDBHELPER)
+            reglages.setSetting('default_player_movies', LECTEUR + ' play_movie')
+            reglages.setSetting('default_player_episodes', LECTEUR + ' play_episode')
+    except (OSError, RuntimeError) as erreur:
+        log('lecteurs alkoFlix : %r' % erreur)
+
+
+def choisir_fond(redemander=True):
+    """Fond d'écran du profil alkoFlix : chemin de l'image téléchargée, ou None
+    pour garder celui du pack. Le choix est retenu pour les mises à jour."""
+    choix = open(FICHIER_FOND).read().strip() if os.path.isfile(FICHIER_FOND) else ''
+    fichiers = [fichier for _, fichier in FONDS]
+    if redemander or (choix not in fichiers and choix != 'aucun'):
+        numero = dialog.select("Quel fond d'écran ?", [nom for nom, _ in FONDS] + ["Celui d'Arctic Fuse 3"])
+        choix = fichiers[numero] if 0 <= numero < len(fichiers) else 'aucun'
+        os.makedirs(DOSSIER_FONDS, exist_ok=True)
+        with open(FICHIER_FOND, 'w') as sortie:
+            sortie.write(choix)
+    if choix == 'aucun':
+        return None
+    cible = os.path.join(DOSSIER_FONDS, choix)
+    try:
+        with urlopen(PACKS_URL + 'fonds/' + choix, timeout=30) as reponse, open(cible, 'wb') as sortie:
+            shutil.copyfileobj(reponse, sortie)
+    except (URLError, OSError) as erreur:
+        log('fond %s : %r' % (choix, erreur))
+        return cible if os.path.isfile(cible) else None
+    return cible
+
+
+def poser_fond(image):
+    """Inscrit le fond dans les réglages de l'habillage, pendant qu'il n'est pas actif."""
+    fichier = os.path.join(ADDON_DATA, SKIN, 'settings.xml')
+    if not os.path.isfile(fichier):
+        return
+    with open(fichier, encoding='utf-8') as source:
+        xml = source.read()
+    ligne = '<setting id="background.image" type="string">%s</setting>' % image.replace('&', '&amp;')
+    motif = re.compile(r'<setting id="background\.image" type="string">.*?</setting>|<setting id="background\.image" type="string" */>', re.I | re.S)
+    xml = motif.sub(lambda m: ligne, xml, count=1) if motif.search(xml) else xml.replace('</settings>', '    %s\n</settings>' % ligne)
+    with open(fichier, 'w', encoding='utf-8') as sortie:
+        sortie.write(xml)
 
 
 def fermer_fenetres():
@@ -515,6 +611,49 @@ def activer_ecran_de_choix():
     return xbmc.getCondVisibility('System.HasLoginScreen')
 
 
+def poser_logos():
+    """Donne à chaque profil le logo de son extension sur l'écran de choix.
+    Kodi n'a aucune commande pour l'image d'un profil et réécrit profiles.xml
+    en se fermant : on inscrit donc les logos dans le fichier, puis on le
+    protège en écriture. Au démarrage suivant Kodi le relit, et service.py
+    lève la protection. Renvoie True si un logo a été posé."""
+    try:
+        arbre = ElementTree.parse(FICHIER_PROFILS)
+        change = False
+        for profil in arbre.getroot().iter('profile'):
+            logo, vignette = LOGOS.get(profil.findtext('name')), profil.find('thumbnail')
+            # On ne remplace pas une image que quelqu'un a choisie.
+            if logo and vignette is not None and not (vignette.text or '').strip():
+                vignette.text = logo
+                change = True
+        if not change:
+            return False
+        os.chmod(FICHIER_PROFILS, 0o644)
+        arbre.write(FICHIER_PROFILS, encoding='utf-8')
+        os.chmod(FICHIER_PROFILS, 0o444)
+        os.makedirs(os.path.dirname(VERROU_PROFILS), exist_ok=True)
+        with open(VERROU_PROFILS, 'w') as sortie:
+            sortie.write(str(os.getpid()))
+        return True
+    except (OSError, ElementTree.ParseError) as erreur:
+        log('logos : %r' % erreur)
+        return False
+
+
+def lever_verrou_profils():
+    """Rend profiles.xml à Kodi une fois qu'il l'a relu, c'est-à-dire après un
+    redémarrage : le numéro de processus n'est plus celui noté par poser_logos."""
+    if not os.path.isfile(VERROU_PROFILS):
+        return
+    try:
+        if open(VERROU_PROFILS).read().strip() == str(os.getpid()):
+            return
+        os.chmod(FICHIER_PROFILS, 0o644)
+        os.remove(VERROU_PROFILS)
+    except OSError as erreur:
+        log('verrou des profils : %r' % erreur)
+
+
 def copier_extensions_actives(dossier):
     """Un profil neuf démarre avec toutes les extensions désactivées : on lui
     donne la liste du profil principal (habillage, Catch-up TV, ce script…)."""
@@ -567,8 +706,9 @@ def formule_alkoflix():
     if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES)):
         return
     franciser()
+    relier_alkoflix()
     archive = telecharger_pack_alkoflix()
-    if not appliquer_ici(archive):
+    if not appliquer_ici(archive, choisir_fond(), PROFIL_CATCHUP in profils()):
         dialog.ok(TITRE, "Réglages copiés, mais l'habillage n'a pas pu être activé.[CR]Active Arctic Fuse 3 dans Paramètres > Interface.")
     elif archive is None:
         annoncer("Arctic Fuse 3 et alkoFlix sont installés.[CR]La configuration n'est pas encore publiée : l'habillage garde ses réglages.")
@@ -584,7 +724,8 @@ def formule_catchup():
     franciser()
     pack_alkoflix = telecharger_pack_alkoflix()
     pack_catchup = telecharger_pack(PACK_CATCHUP, muet=True) or pack_alkoflix
-    if not appliquer_ici(pack_alkoflix):
+    relier_alkoflix()
+    if not appliquer_ici(pack_alkoflix, choisir_fond(), True):
         dialog.ok(TITRE, "L'habillage n'a pas pu être activé.[CR]Active Arctic Fuse 3 dans Paramètres > Interface, puis relance.")
         return
     preparer_profil_catchup(pack_catchup)
@@ -601,12 +742,18 @@ def mettre_a_jour():
     archive = telecharger_pack_alkoflix(redemander=False)
     if archive is None:
         return
+    logos = False
     if PROFIL_CATCHUP in profils():
         dossier = dossier_du_profil(PROFIL_CATCHUP)
         copier_extensions_actives(dossier)
         ecrire_pack(telecharger_pack(PACK_CATCHUP, muet=True) or archive, os.path.join(dossier, 'addon_data'))
-    if appliquer_ici(archive):
-        annoncer("L'interface est à jour.[CR]Si des menus manquent, redémarre Kodi une fois.")
+        logos = poser_logos()
+    relier_alkoflix()
+    if appliquer_ici(archive, choisir_fond(redemander=False), PROFIL_CATCHUP in profils()):
+        if logos:
+            annoncer("L'interface est à jour.[CR]Redémarre Kodi : les profils auront leur logo sur l'écran de choix.")
+        else:
+            annoncer("L'interface est à jour.[CR]Si des menus manquent, redémarre Kodi une fois.")
     else:
         dialog.ok(TITRE, "Réglages copiés, mais l'habillage n'a pas pu être activé.[CR]Active Arctic Fuse 3 dans Paramètres > Interface.")
 
@@ -618,6 +765,7 @@ def ajouter_catchup():
         return
     if not installer_tout((CATCHUP,)):
         return
+    hors_de_l_habillage(lambda: ajuster_menu_options(True))
     preparer_profil_catchup(telecharger_pack(PACK_CATCHUP, muet=True) or telecharger_pack(PACK_ALKOFLIX, muet=True))
 
 
@@ -640,6 +788,7 @@ def preparer_profil_catchup(pack):
     renomme = insister(renommer_profil_principal, PROFIL_ALKOFLIX)
     ecran = insister(activer_ecran_de_choix)
     retour_accueil()
+    poser_logos()   # en dernier : ensuite Kodi ne peut plus enregistrer ses profils jusqu'au redémarrage
     restes = []
     if not renomme:
         restes.append("renommer le profil principal en « %s »" % PROFIL_ALKOFLIX)
@@ -851,6 +1000,7 @@ ERREURS_GITHUB = {
 
 
 def menu():
+    lever_verrou_profils()
     if dans_le_profil_principal():
         entrees = [
             ('Formule alkoFlix', formule_alkoflix),

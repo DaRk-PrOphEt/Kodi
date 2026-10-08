@@ -22,6 +22,12 @@ sans que ses réglages soient modifiés.
 Une fois une formule installée, « Mettre l'interface à jour » repose la dernière
 interface publiée sur chaque profil, sans rien réinstaller.
 
+Les formules relient aussi alkoFlix à TMDb Helper (lecteurs fournis par alkoFlix, pris par
+défaut), pour que la recherche et les fiches d'Arctic Fuse 3 lancent bien alkoFlix. Elles
+proposent un fond d'écran (`packs/fonds/`), donnent à chaque profil le logo de son
+extension sur l'écran de choix, et ajoutent au menu Options un bouton pour passer d'un
+profil à l'autre.
+
 Les identifiants de replay (TF1+, M6+…) se saisissent depuis le menu du script, dans
 le profil Catch-up TV. Ils restent sur l'appareil.
 

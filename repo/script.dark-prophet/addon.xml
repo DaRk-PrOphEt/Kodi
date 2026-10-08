@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="script.dark-prophet" name="DaRk-PrOphEt" version="1.7.0" provider-name="DaRk-PrOphEt">
+<addon id="script.dark-prophet" name="DaRk-PrOphEt" version="1.8.0" provider-name="DaRk-PrOphEt">
     <requires>
         <import addon="xbmc.python" version="3.0.1" />
     </requires>
     <extension point="xbmc.python.script" library="default.py">
         <provides>executable</provides>
     </extension>
+    <extension point="xbmc.service" library="service.py" />
     <extension point="xbmc.addon.metadata">
         <summary lang="fr_FR">Arctic Fuse 3, alkoFlix et Catch-up TV configurés par DaRk-PrOphEt</summary>
         <description lang="fr_FR">Deux formules. « alkoFlix » : installe l'habillage Arctic Fuse 3 et alkoFlix, puis applique la configuration de DaRk-PrOphEt. « alkoFlix + Catch-up TV » : ajoute Catch-up TV &amp; More dans un profil à part, avec un écran de choix au démarrage de Kodi, et la saisie de tes identifiants de replay. Catch-up TV peut aussi s'ajouter plus tard. Kodi passe en français, avec les sons d'Android TV. Demande Kodi 21 ou plus récent.</description>
