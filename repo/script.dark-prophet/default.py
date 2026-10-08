@@ -75,6 +75,9 @@ SAUVEGARDE = os.path.join(ADDON_DATA, 'script.dark-prophet', 'sauvegarde')
 # Les paramètres d'une extension sont propres à chaque profil : le jeton est
 # recopié ici pour servir aussi depuis le profil Catch-up TV.
 FICHIER_JETON = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'jeton')
+# Interface choisie à l'installation (« complet » ou « leger »), pour que la
+# mise à jour ne repose pas la question.
+FICHIER_INTERFACE = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'interface')
 
 # Écran « Profils » de Kodi : identifiants fixés par Kodi, les mêmes dans tous les habillages.
 LISTE_PROFILS = 2
@@ -257,16 +260,24 @@ def telecharger_pack(nom, muet=False):
     return None
 
 
-def telecharger_pack_alkoflix():
+def telecharger_pack_alkoflix(redemander=True):
     """Le pack du profil alkoFlix. Si une interface allégée est publiée, on
-    demande laquelle installer ; sinon la question n'est pas posée."""
+    demande laquelle installer ; sinon la question n'est pas posée. Le choix
+    est retenu : avec redemander=False (mise à jour), on le reprend."""
     leger = telecharger_pack(PACK_LEGER, muet=True)
-    if leger is not None:
-        choix = dialog.select('Quel appareil ?', ['Appareil récent : interface complète',
-                                                  'Boîtier modeste : interface allégée'])
-        if choix == 1:
-            return leger
-    return telecharger_pack(PACK_ALKOFLIX)
+    if leger is None:
+        return telecharger_pack(PACK_ALKOFLIX)
+    choix = ''
+    if not redemander and os.path.isfile(FICHIER_INTERFACE):
+        choix = open(FICHIER_INTERFACE).read().strip()
+    if choix not in ('complet', 'leger'):
+        numero = dialog.select('Quel appareil ?', ['Appareil récent : interface complète',
+                                                   'Boîtier modeste : interface allégée'])
+        choix = 'leger' if numero == 1 else 'complet'
+        os.makedirs(os.path.dirname(FICHIER_INTERFACE), exist_ok=True)
+        with open(FICHIER_INTERFACE, 'w') as sortie:
+            sortie.write(choix)
+    return leger if choix == 'leger' else telecharger_pack(PACK_ALKOFLIX)
 
 
 def membres_autorises(archive, racine):
@@ -579,6 +590,27 @@ def formule_catchup():
     preparer_profil_catchup(pack_catchup)
 
 
+def mettre_a_jour():
+    """Pour qui a déjà tout installé : repose la dernière interface publiée
+    sur chaque profil et installe ce que les versions récentes ont ajouté
+    (icônes, suggestions du clavier, clavier français)."""
+    if not dialog.yesno(TITRE, "Mettre l'interface à jour ?[CR]Les réglages actuels de l'habillage seront remplacés par la dernière version (une copie est gardée)."):
+        return
+    installer_tout((LANGUE, SONS, SAISIE, ICONES))
+    franciser()
+    archive = telecharger_pack_alkoflix(redemander=False)
+    if archive is None:
+        return
+    if PROFIL_CATCHUP in profils():
+        dossier = dossier_du_profil(PROFIL_CATCHUP)
+        copier_extensions_actives(dossier)
+        ecrire_pack(telecharger_pack(PACK_CATCHUP, muet=True) or archive, os.path.join(dossier, 'addon_data'))
+    if appliquer_ici(archive):
+        annoncer("L'interface est à jour.[CR]Si des menus manquent, redémarre Kodi une fois.")
+    else:
+        dialog.ok(TITRE, "Réglages copiés, mais l'habillage n'a pas pu être activé.[CR]Active Arctic Fuse 3 dans Paramètres > Interface.")
+
+
 def ajouter_catchup():
     """Pour qui a pris la formule alkoFlix et change d'avis : ajoute Catch-up TV
     et son profil sans toucher aux réglages du profil ouvert."""
@@ -824,9 +856,11 @@ def menu():
             ('Formule alkoFlix', formule_alkoflix),
             ('Formule alkoFlix + Catch-up TV', formule_catchup),
         ]
-        if xbmc.getSkinDir() == SKIN and installe(ALKOFLIX) and PROFIL_CATCHUP not in profils():
-            # La formule alkoFlix est déjà en place : on propose d'abord le complément.
-            entrees.insert(0, ('Ajouter Catch-up TV à mon installation', ajouter_catchup))
+        if xbmc.getSkinDir() == SKIN and installe(ALKOFLIX):
+            # Une formule est déjà en place : on propose d'abord la mise à jour et le complément.
+            if PROFIL_CATCHUP not in profils():
+                entrees.insert(0, ('Ajouter Catch-up TV à mon installation', ajouter_catchup))
+            entrees.insert(0, ("Mettre l'interface à jour", mettre_a_jour))
         entrees += [
             ('Mes identifiants Catch-up TV', identifiants_catchup),
             ("Remettre mes réglages d'avant", restaurer_avant),

@@ -19,6 +19,9 @@ Les deux formules passent Kodi en français et installent les sons d'Android TV.
 Qui a pris la formule alkoFlix peut ajouter Catch-up TV plus tard depuis le menu,
 sans que ses réglages soient modifiés.
 
+Une fois une formule installée, « Mettre l'interface à jour » repose la dernière
+interface publiée sur chaque profil, sans rien réinstaller.
+
 Les identifiants de replay (TF1+, M6+…) se saisissent depuis le menu du script, dans
 le profil Catch-up TV. Ils restent sur l'appareil.
 
