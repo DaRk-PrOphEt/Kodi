@@ -94,6 +94,17 @@ FICHIER_INTERFACE = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'i
 FONDS = (('Rouge', 'alkoflix-rouge.jpg'), ('Bleu', 'alkoflix-bleu.jpg'))
 FICHIER_FOND = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'fond')
 DOSSIER_FONDS = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet')
+FOND_HABILLAGE = 'special://skin/extras/backgrounds/blur/purple_blur.jpg'   # celui des packs
+FOND_CATCHUP = 'catchup.jpg'   # l'image officielle de Catch-up TV & More, assombrie
+
+# Image de la case « Plus… » en bout de rangée. Arctic Fuse 3 la lit dans son fichier
+# groupé Textures.xbt, qui passe avant tout fichier posé dans son dossier : on fait donc
+# pointer la seule ligne de l'habillage qui la cite vers notre image. Une mise à jour de
+# l'habillage remet sa ligne ; service.py la repointe au démarrage suivant.
+IMAGE_PLUS = 'more-items-wide.png'
+DOSSIER_IMAGES = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'images')
+PLUS_ORIGINE = '>fallback/more-items-wide.png<'
+PLUS_REMPLACEE = '>special://masterprofile/addon_data/script.dark-prophet/images/more-items-wide.png<'
 
 # Image de chaque profil sur l'écran de choix : l'icône officielle de son extension.
 LOGOS = {PROFIL_ALKOFLIX: 'special://home/addons/%s/icon.png' % ALKOFLIX,
@@ -411,6 +422,19 @@ def relier_alkoflix():
         log('lecteurs alkoFlix : %r' % erreur)
 
 
+def telecharger_fond(fichier):
+    """Télécharge un fond d'écran du dépôt. Renvoie son chemin, ou None s'il est introuvable."""
+    cible = os.path.join(DOSSIER_FONDS, fichier)
+    try:
+        os.makedirs(DOSSIER_FONDS, exist_ok=True)
+        with urlopen(PACKS_URL + 'fonds/' + fichier, timeout=30) as reponse, open(cible, 'wb') as sortie:
+            shutil.copyfileobj(reponse, sortie)
+    except (URLError, OSError) as erreur:
+        log('fond %s : %r' % (fichier, erreur))
+        return cible if os.path.isfile(cible) else None
+    return cible
+
+
 def choisir_fond(redemander=True):
     """Fond d'écran du profil alkoFlix : chemin de l'image téléchargée, ou None
     pour garder celui du pack. Le choix est retenu pour les mises à jour."""
@@ -422,21 +446,28 @@ def choisir_fond(redemander=True):
         os.makedirs(DOSSIER_FONDS, exist_ok=True)
         with open(FICHIER_FOND, 'w') as sortie:
             sortie.write(choix)
-    if choix == 'aucun':
-        return None
-    cible = os.path.join(DOSSIER_FONDS, choix)
-    try:
-        with urlopen(PACKS_URL + 'fonds/' + choix, timeout=30) as reponse, open(cible, 'wb') as sortie:
-            shutil.copyfileobj(reponse, sortie)
-    except (URLError, OSError) as erreur:
-        log('fond %s : %r' % (choix, erreur))
-        return cible if os.path.isfile(cible) else None
-    return cible
+    return None if choix == 'aucun' else telecharger_fond(choix)
 
 
-def poser_fond(image):
-    """Inscrit le fond dans les réglages de l'habillage, pendant qu'il n'est pas actif."""
-    fichier = os.path.join(ADDON_DATA, SKIN, 'settings.xml')
+def changer_fond():
+    """Change le fond d'écran du profil alkoFlix à tout moment, sans rien réinstaller."""
+    numero = dialog.select("Quel fond d'écran ?", [nom for nom, _ in FONDS] + ["Celui d'Arctic Fuse 3"])
+    if numero < 0:
+        return
+    choix = FONDS[numero][1] if numero < len(FONDS) else 'aucun'
+    image = FOND_HABILLAGE if choix == 'aucun' else telecharger_fond(choix)
+    if image is None:
+        dialog.ok(TITRE, 'Téléchargement impossible. Vérifie la connexion puis relance.')
+        return
+    os.makedirs(DOSSIER_FONDS, exist_ok=True)
+    with open(FICHIER_FOND, 'w') as sortie:
+        sortie.write(choix)
+    xbmc.executebuiltin('Skin.SetString(Background.Image,%s)' % image)
+
+
+def poser_fond(image, racine=None):
+    """Inscrit le fond dans les réglages de l'habillage d'un profil, pendant qu'il n'y est pas actif."""
+    fichier = os.path.join(racine or ADDON_DATA, SKIN, 'settings.xml')
     if not os.path.isfile(fichier):
         return
     with open(fichier, encoding='utf-8') as source:
@@ -446,6 +477,34 @@ def poser_fond(image):
     xml = motif.sub(lambda m: ligne, xml, count=1) if motif.search(xml) else xml.replace('</settings>', '    %s\n</settings>' % ligne)
     with open(fichier, 'w', encoding='utf-8') as sortie:
         sortie.write(xml)
+
+
+def poser_images_habillage(telecharger=True):
+    """Fait afficher notre image sur la case « Plus… » d'Arctic Fuse 3. Avec
+    telecharger=False (au démarrage de Kodi), on se contente de repointer la
+    ligne si une mise à jour de l'habillage l'a remise. Prend effet au
+    prochain chargement de l'habillage."""
+    copie = os.path.join(DOSSIER_IMAGES, IMAGE_PLUS)
+    try:
+        if telecharger:
+            os.makedirs(DOSSIER_IMAGES, exist_ok=True)
+            with urlopen(PACKS_URL + 'images/' + IMAGE_PLUS, timeout=30) as reponse, open(copie, 'wb') as sortie:
+                shutil.copyfileobj(reponse, sortie)
+        if os.path.isfile(copie):
+            remplacer_dans_habillage(PLUS_ORIGINE, PLUS_REMPLACEE)
+    except (URLError, OSError) as erreur:
+        log('image « Plus » : %r' % erreur)
+
+
+def remplacer_dans_habillage(avant, apres):
+    fichier = xbmcvfs.translatePath('special://home/addons/%s/1080i/Includes_Objects.xml' % SKIN)
+    if not os.path.isfile(fichier):
+        return
+    with open(fichier, encoding='utf-8') as source:
+        xml = source.read()
+    if avant in xml:
+        with open(fichier, 'w', encoding='utf-8') as sortie:
+            sortie.write(xml.replace(avant, apres))
 
 
 def fermer_fenetres():
@@ -735,6 +794,7 @@ def formule_alkoflix():
         return
     franciser()
     relier_alkoflix()
+    poser_images_habillage()
     archive = telecharger_pack_alkoflix()
     if not appliquer_ici(archive, choisir_fond(), PROFIL_CATCHUP in profils()):
         dialog.ok(TITRE, "Réglages copiés, mais l'habillage n'a pas pu être activé.[CR]Active Arctic Fuse 3 dans Paramètres > Interface.")
@@ -754,6 +814,7 @@ def formule_catchup():
     pack_alkoflix = telecharger_pack_alkoflix()
     pack_catchup = telecharger_pack(PACK_CATCHUP, muet=True) or pack_alkoflix
     relier_alkoflix()
+    poser_images_habillage()
     if not appliquer_ici(pack_alkoflix, choisir_fond(), True):
         dialog.ok(TITRE, "L'habillage n'a pas pu être activé.[CR]Active Arctic Fuse 3 dans Paramètres > Interface, puis relance.")
         return
@@ -776,8 +837,12 @@ def mettre_a_jour():
         dossier = dossier_du_profil(PROFIL_CATCHUP)
         copier_extensions_actives(dossier)
         ecrire_pack(telecharger_pack(PACK_CATCHUP, muet=True) or archive, os.path.join(dossier, 'addon_data'))
+        fond = telecharger_fond(FOND_CATCHUP)
+        if fond:
+            poser_fond(fond, os.path.join(dossier, 'addon_data'))
         logos = poser_logos()
     relier_alkoflix()
+    poser_images_habillage()
     if appliquer_ici(archive, choisir_fond(redemander=False), PROFIL_CATCHUP in profils()):
         if logos:
             annoncer("L'interface est à jour.[CR]Redémarre Kodi : les profils auront leur logo sur l'écran de choix.")
@@ -813,6 +878,9 @@ def preparer_profil_catchup(pack):
     choisir_habillage_du_profil(dossier)
     if pack is not None:
         ecrire_pack(pack, os.path.join(dossier, 'addon_data'))
+        fond = telecharger_fond(FOND_CATCHUP)
+        if fond:
+            poser_fond(fond, os.path.join(dossier, 'addon_data'))
 
     renomme = insister(renommer_profil_principal, PROFIL_ALKOFLIX)
     ecran = insister(activer_ecran_de_choix)
@@ -835,7 +903,7 @@ def reappliquer_catchup():
     archive = telecharger_pack(PACK_CATCHUP)
     if archive is None:
         dialog.ok(TITRE, "La configuration Catch-up TV n'est pas encore publiée.")
-    elif appliquer_ici(archive):
+    elif appliquer_ici(archive, telecharger_fond(FOND_CATCHUP)):
         annoncer("C'est appliqué.[CR]Si des menus manquent, redémarre Kodi une fois.")
     else:
         dialog.ok(TITRE, "Réglages copiés, mais l'habillage n'a pas pu être activé.[CR]Active Arctic Fuse 3 dans Paramètres > Interface.")
@@ -1074,7 +1142,12 @@ def reinitialiser():
     redemarrer = remettre_profil_unique(etat.get('profil') or 'Master user')
     # 4. Ce que le script avait noté pour lui-même.
     shutil.rmtree(SAUVEGARDE, ignore_errors=True)
-    images = [os.path.join(DOSSIER_FONDS, fichier) for _, fichier in FONDS] + [os.path.join(DOSSIER_FONDS, 'fond-saisie.png')]
+    try:
+        remplacer_dans_habillage(PLUS_REMPLACEE, PLUS_ORIGINE)
+    except OSError as erreur:
+        log('image « Plus » : %r' % erreur)
+    shutil.rmtree(DOSSIER_IMAGES, ignore_errors=True)
+    images = [os.path.join(DOSSIER_FONDS, fichier) for fichier in [f for _, f in FONDS] + [FOND_CATCHUP, 'fond-saisie.png']]
     for fichier in [ETAT_AVANT, FICHIER_INTERFACE, FICHIER_FOND] + images:
         try:
             os.remove(fichier)
@@ -1267,6 +1340,7 @@ def menu():
             if PROFIL_CATCHUP not in profils():
                 entrees.insert(0, ('Ajouter Catch-up TV à mon installation', ajouter_catchup))
             entrees.insert(0, ("Mettre l'interface à jour", mettre_a_jour))
+            entrees.append(("Changer le fond d'écran", changer_fond))
         entrees += [
             ('Mes identifiants Catch-up TV', identifiants_catchup),
             ('Réinitialiser les réglages', reinitialiser),
