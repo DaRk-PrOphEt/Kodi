@@ -115,7 +115,7 @@
       <platform>all</platform>
     </extension>
   </addon>
-  <addon id="script.dark-prophet" name="DaRk-PrOphEt" version="1.13.0" provider-name="DaRk-PrOphEt">
+  <addon id="script.dark-prophet" name="DaRk-PrOphEt" version="1.14.0" provider-name="DaRk-PrOphEt">
     <requires>
       <import addon="xbmc.python" version="3.0.1" />
       <import addon="script.module.qrcode" version="6.1.0" optional="true" />
@@ -126,7 +126,7 @@
     <extension point="xbmc.service" library="service.py" />
     <extension point="xbmc.addon.metadata">
       <summary lang="fr_FR">Arctic Fuse 3, alkoFlix et Catch-up TV configurés par DaRk-PrOphEt</summary>
-      <description lang="fr_FR">Installe Arctic Fuse 3 et alkoFlix avec l'interface de DaRk-PrOphEt, en trois versions : Allégée pour les boîtiers modestes, Base, et Full avec vStream en secours. Peut ajouter Catch-up TV &amp; More dans un profil à part, avec un écran de choix au démarrage de Kodi et la saisie de tes identifiants de replay depuis un téléphone. Kodi passe en français (interface, audio, sous-titres forcés). Demande Kodi 21 ou plus récent.</description>
+      <description lang="fr_FR">Installe Arctic Fuse 3 et alkoFlix avec l'interface de DaRk-PrOphEt, en trois versions : Allégée pour les boîtiers modestes, Base, et Full avec vStream en secours. Peut ajouter Catch-up TV &amp; More dans un profil à part, avec un écran de choix au démarrage de Kodi et la saisie de tes identifiants de replay depuis un téléphone. Kodi passe en français (interface, audio, sous-titres forcés), la touche Retour arrête le film, et « Nettoyer Kodi » libère de la place. Demande Kodi 21 ou plus récent.</description>
       <platform>all</platform>
       <assets>
         <icon>icon.png</icon>

@@ -39,11 +39,16 @@ ICONES = 'resource.images.alkodicons.coal'
 # Suggestions du clavier : sans elle, Arctic Fuse 3 propose de l'installer à
 # chaque ouverture du clavier.
 SAISIE = 'plugin.program.autocompletion'
+# Les replays en ont besoin, les bandes-annonces passent par YouTube : installés
+# d'avance, Kodi ne les réclame plus au premier replay ni à la première bande-annonce.
+FLUX = 'inputstream.adaptive'
+YOUTUBE = 'plugin.video.youtube'
 TMDBHELPER = 'plugin.video.themoviedb.helper'
 LECTEUR = 'alkoflix.select.json'
 NOMS = {SKIN: 'Arctic Fuse 3', ALKOFLIX: 'alkoFlix', CATCHUP: 'Catch-up TV & More',
         LANGUE: 'la langue française', SONS: 'les sons Android TV', ICONES: "les icônes d'alkoFlix",
-        SAISIE: 'les suggestions du clavier'}
+        SAISIE: 'les suggestions du clavier', FLUX: 'la lecture des replays (InputStream Adaptive)',
+        YOUTUBE: 'YouTube (bandes-annonces)'}
 # Dépôt officiel de chaque extension. Le script les installe lui-même : Kodi
 # refuse d'installer un dépôt en tant que dépendance d'une autre extension.
 DEPOTS = {SKIN: 'repository.jurialmunkey', ALKOFLIX: 'repository.alkoflix', CATCHUP: 'catchuptvandmore.kodi.release',
@@ -52,7 +57,7 @@ NOMS.update({VSTREAM: 'vStream', 'repository.vstream': 'le dépôt de vStream'})
 NOMS.update({'repository.jurialmunkey': "le dépôt d'Arctic Fuse 3", 'repository.alkoflix': "le dépôt d'alkoFlix",
              'catchuptvandmore.kodi.release': 'le dépôt de Catch-up TV'})
 # Le confort : si l'un d'eux ne s'installe pas, la formule continue quand même.
-FACULTATIFS = (LANGUE, SONS, ICONES, SAISIE)
+FACULTATIFS = (LANGUE, SONS, ICONES, SAISIE, FLUX, YOUTUBE)
 
 PACKS_URL = 'https://raw.githubusercontent.com/DaRk-PrOphEt/Kodi/main/packs/'
 # Publication d'un pack depuis Kodi : réservée au propriétaire du dépôt, qui
@@ -121,8 +126,31 @@ PROFILS_A_EFFACER = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'p
 ETAT_AVANT = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'etat_avant.json')
 REGLAGES_KODI = ('lookandfeel.skin', 'lookandfeel.soundskin', 'locale.keyboardlayouts', 'locale.country',
                  'addons.updatemode', 'locale.audiolanguage', 'videoplayer.preferdefaultflag',
-                 'locale.subtitlelanguage', 'subtitles.languages',
+                 'locale.subtitlelanguage', 'subtitles.languages', 'filelists.showparentdiritems',
                  'locale.language')   # la langue en dernier : Kodi recharge tout
+
+# Touche Retour pendant un film : arrête la lecture (d'origine, elle revient aux
+# menus en laissant le film tourner derrière). Avec les commandes à l'écran
+# ouvertes, Retour ne fait que les refermer.
+NOM_TOUCHES = 'dark-prophet.xml'
+TOUCHES = """<?xml version="1.0" encoding="UTF-8"?>
+<keymap>
+    <FullscreenVideo>
+        <keyboard>
+            <backspace>Stop</backspace>
+        </keyboard>
+        <remote>
+            <back>Stop</back>
+        </remote>
+    </FullscreenVideo>
+</keymap>
+"""
+# Réglages posés dans les extensions de confort. YouTube : pas d'assistant de
+# configuration à la première bande-annonce.
+REGLAGES_EXTENSIONS = {
+    SAISIE: {'autocomplete_lang': 'fr'},
+    YOUTUBE: {'kodion.setup_wizard': 'false', 'kodion.setup_wizard.forced_runs': '2147483647'},
+}
 
 # Écran « Profils » de Kodi : identifiants fixés par Kodi, les mêmes dans tous les habillages.
 LISTE_PROFILS = 2
@@ -184,6 +212,10 @@ def rafraichir_depots():
 def installer_extension(addon_id):
     """Lance l'installation, confirme à la place de l'utilisateur et attend qu'elle aboutisse."""
     if installe(addon_id):
+        return True
+    # Livrée avec Kodi mais éteinte (InputStream Adaptive sur certains appareils) : on l'allume.
+    rpc('Addons.SetAddonEnabled', {'addonid': addon_id, 'enabled': True})
+    if attendre('System.HasAddon(%s)' % addon_id, 2):
         return True
     xbmc.executebuiltin('InstallAddon(%s)' % addon_id)
     if attendre('Window.IsVisible(yesnodialog)', 15):
@@ -272,6 +304,60 @@ def franciser():
     regler('subtitles.languages', ['French'])
     if installe(SONS):
         regler('lookandfeel.soundskin', SONS)
+
+
+def ecrire_reglages(fichier, valeurs):
+    """Pose des réglages dans un fichier de réglages de Kodi (guisettings.xml ou
+    settings.xml d'une extension) d'un profil qui n'est PAS ouvert."""
+    try:
+        arbre = ElementTree.parse(fichier)
+    except (OSError, ElementTree.ParseError):
+        arbre = ElementTree.ElementTree(ElementTree.fromstring('<settings version="2" />'))
+    racine = arbre.getroot()
+    for cle, valeur in valeurs.items():
+        for reglage in racine.iter('setting'):
+            if reglage.get('id') == cle:
+                reglage.text = valeur
+                reglage.attrib.pop('default', None)
+                break
+        else:
+            ElementTree.SubElement(racine, 'setting', id=cle).text = valeur
+    os.makedirs(os.path.dirname(fichier), exist_ok=True)
+    arbre.write(fichier, encoding='utf-8')
+
+
+def poser_touches(dossier):
+    cible = os.path.join(dossier, 'keymaps', NOM_TOUCHES)
+    os.makedirs(os.path.dirname(cible), exist_ok=True)
+    with open(cible, 'w', encoding='utf-8') as sortie:
+        sortie.write(TOUCHES)
+
+
+def regler_confort(autre_profil=None):
+    """Les petits réglages qui évitent des questions et des gestes : pas de
+    ligne « .. » en tête des listes, Retour arrête le film, suggestions du
+    clavier en français, YouTube sans assistant. autre_profil : dossier d'un
+    profil fermé à régler de la même façon."""
+    regler('filelists.showparentdiritems', False)
+    for addon_id, valeurs in REGLAGES_EXTENSIONS.items():
+        if not installe(addon_id):
+            continue
+        try:
+            extension = xbmcaddon.Addon(addon_id)
+            for cle, valeur in valeurs.items():
+                extension.setSetting(cle, valeur)
+        except RuntimeError as erreur:
+            log('réglages de %s : %r' % (addon_id, erreur))
+        if autre_profil:
+            ecrire_reglages(os.path.join(autre_profil, 'addon_data', addon_id, 'settings.xml'), valeurs)
+    try:
+        poser_touches(PROFIL)
+        if autre_profil:
+            poser_touches(autre_profil)
+            ecrire_reglages(os.path.join(autre_profil, 'guisettings.xml'), {'filelists.showparentdiritems': 'false'})
+        xbmc.executebuiltin('Action(reloadkeymaps)')
+    except OSError as erreur:
+        log('touches : %r' % erreur)
 
 
 # --- Habillage et packs de réglages ----------------------------------------
@@ -838,15 +924,7 @@ def choisir_habillage_du_profil(dossier):
     fichier = os.path.join(dossier, 'guisettings.xml')
     if not os.path.isfile(fichier):
         shutil.copy(os.path.join(MAITRE, 'guisettings.xml'), fichier)
-    arbre = ElementTree.parse(fichier)
-    for reglage in arbre.getroot().iter('setting'):
-        if reglage.get('id') == 'lookandfeel.skin':
-            reglage.text = SKIN
-            reglage.attrib.pop('default', None)
-            break
-    else:
-        ElementTree.SubElement(arbre.getroot(), 'setting', id='lookandfeel.skin').text = SKIN
-    arbre.write(fichier, encoding='utf-8')
+    ecrire_reglages(fichier, {'lookandfeel.skin': SKIN})
 
 
 GUIDE_PROFIL = (
@@ -865,9 +943,10 @@ def formule_alkoflix():
         return
     version = choisir_version()
     noter_etat_avant()
-    if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES) + ((VSTREAM,) if version == 'full' else ())):
+    if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES) + ((VSTREAM,) if version == 'full' else ()) + (FLUX, YOUTUBE)):
         return
     franciser()
+    regler_confort()
     relier_alkoflix()
     relier_vstream(version == 'full')
     poser_images_habillage()
@@ -885,9 +964,10 @@ def formule_catchup():
         return
     version = choisir_version()
     noter_etat_avant()
-    if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES, CATCHUP) + ((VSTREAM,) if version == 'full' else ())):
+    if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES, CATCHUP) + ((VSTREAM,) if version == 'full' else ()) + (FLUX, YOUTUBE)):
         return
     franciser()
+    regler_confort()
     pack_alkoflix = telecharger_pack_alkoflix(version)
     pack_catchup = telecharger_pack(PACK_CATCHUP, muet=True) or pack_alkoflix
     relier_alkoflix()
@@ -902,13 +982,14 @@ def formule_catchup():
 def mettre_a_jour():
     """Pour qui a déjà tout installé : repose la dernière interface publiée
     sur chaque profil et installe ce que les versions récentes ont ajouté
-    (icônes, suggestions du clavier, clavier français)."""
+    (icônes, suggestions du clavier, clavier français, YouTube, touche Retour…)."""
     if not dialog.yesno(TITRE, "Mettre l'interface à jour ?[CR]Les réglages actuels de l'habillage seront remplacés par la dernière version (« Réinitialiser les réglages » les remet)."):
         return
     version = choisir_version(redemander=False)
-    if not installer_tout((LANGUE, SONS, SAISIE, ICONES) + ((VSTREAM,) if version == 'full' else ())):
+    if not installer_tout((LANGUE, SONS, SAISIE, ICONES) + ((VSTREAM,) if version == 'full' else ()) + (FLUX, YOUTUBE)):
         return
     franciser()
+    regler_confort(dossier_du_profil(PROFIL_CATCHUP) if PROFIL_CATCHUP in profils() else None)
     archive = telecharger_pack_alkoflix(version)
     if archive is None:
         return
@@ -938,7 +1019,7 @@ def ajouter_catchup():
     et son profil sans toucher aux réglages du profil ouvert."""
     if not dialog.yesno(TITRE, "Ajouter Catch-up TV ?[CR]Au démarrage, Kodi proposera deux entrées : « %s » et « %s ».[CR]Tes réglages actuels ne sont pas modifiés." % (PROFIL_ALKOFLIX, PROFIL_CATCHUP)):
         return
-    if not installer_tout((CATCHUP,)):
+    if not installer_tout((CATCHUP, FLUX)):
         return
     hors_de_l_habillage(lambda: ajuster_menu_options(True))
     preparer_profil_catchup(telecharger_pack(PACK_CATCHUP, muet=True) or telecharger_pack(PACK_ALKOFLIX, muet=True))
@@ -957,6 +1038,7 @@ def preparer_profil_catchup(pack):
     dossier = dossier_du_profil(PROFIL_CATCHUP)
     copier_extensions_actives(dossier)
     choisir_habillage_du_profil(dossier)
+    regler_confort(dossier)
     if pack is not None:
         ecrire_pack(pack, os.path.join(dossier, 'addon_data'))
         fond = telecharger_fond(FOND_CATCHUP)
@@ -1171,6 +1253,54 @@ def identifiants_par_telephone():
                 pass
 
 
+# --- Nettoyage ----------------------------------------------------------------
+
+def vider(dossier, garder=()):
+    """Supprime le contenu d'un dossier (pas le dossier). Renvoie les octets libérés."""
+    libere = 0
+    for chemin, _, fichiers in os.walk(dossier, topdown=False):
+        for fichier in fichiers:
+            if fichier.endswith(garder):
+                continue
+            complet = os.path.join(chemin, fichier)
+            try:
+                taille = os.path.getsize(complet)
+                os.remove(complet)
+                libere += taille
+            except OSError:
+                pass   # fichier en cours d'utilisation : on le laisse
+        if chemin != dossier:
+            try:
+                os.rmdir(chemin)
+            except OSError:
+                pass
+    return libere
+
+
+def nettoyer():
+    """Libère la place prise par ce que Kodi garde sans en avoir besoin : les
+    paquets d'installation, les fichiers temporaires et les vignettes de tous
+    les profils. Rien de personnel : ni réglages, ni comptes, ni favoris."""
+    if not dialog.yesno(TITRE, "Nettoyer Kodi ?[CR]Supprime les paquets d'installation, les fichiers temporaires et les vignettes (elles se refont toutes seules).[CR]Tes réglages et tes comptes ne sont pas touchés. Kodi se fermera à la fin."):
+        return
+    libere = vider(xbmcvfs.translatePath('special://home/addons/packages/'))
+    libere += vider(xbmcvfs.translatePath('special://temp/'), garder=('.log',))
+    for profil in [MAITRE] + glob.glob(os.path.join(MAITRE, 'profiles', '*', '')):
+        # Kodi tient la liste de ses vignettes dans une base : on ne vide les
+        # vignettes que si la base part avec, sinon il afficherait des cases vides.
+        try:
+            for base in glob.glob(os.path.join(profil, 'Database', 'Textures*.db*')):
+                taille = os.path.getsize(base)
+                os.remove(base)
+                libere += taille
+        except OSError as erreur:
+            log('vignettes de %s gardées : %r' % (profil, erreur))
+            continue
+        libere += vider(os.path.join(profil, 'Thumbnails'))
+    dialog.ok(TITRE, "%d Mo libérés.[CR]Kodi va se fermer : relance-le. Les images reviendront au fil de la navigation." % round(libere / 1048576))
+    xbmc.executebuiltin('Quit')
+
+
 # --- Réinitialisation et fabrication des packs -------------------------------
 
 def noter_etat_avant():
@@ -1228,6 +1358,11 @@ def reinitialiser():
     except OSError as erreur:
         log('image « Plus » : %r' % erreur)
     shutil.rmtree(DOSSIER_IMAGES, ignore_errors=True)
+    try:
+        os.remove(os.path.join(PROFIL, 'keymaps', NOM_TOUCHES))
+        xbmc.executebuiltin('Action(reloadkeymaps)')
+    except OSError:
+        pass
     images = [os.path.join(DOSSIER_FONDS, fichier) for fichier in [f for _, f in FONDS] + [FOND_CATCHUP, 'fond-saisie.png']]
     for fichier in [ETAT_AVANT, FICHIER_INTERFACE, FICHIER_FOND] + images:
         try:
@@ -1424,6 +1559,7 @@ def menu():
             entrees.append(("Changer le fond d'écran", changer_fond))
         entrees += [
             ('Mes identifiants Catch-up TV', identifiants_catchup),
+            ('Nettoyer Kodi', nettoyer),
             ('Réinitialiser les réglages', reinitialiser),
         ]
     else:
@@ -1431,6 +1567,7 @@ def menu():
         entrees = [
             ('Mes identifiants Catch-up TV', identifiants_catchup),
             ('Remettre la configuration Catch-up TV', reappliquer_catchup),
+            ('Nettoyer Kodi', nettoyer),
         ]
     if jeton_de_publication():
         entrees.append(('Publier la configuration de ce profil sur le dépôt', publier_config))
