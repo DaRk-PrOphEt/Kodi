@@ -149,6 +149,13 @@ REGLAGES_EXTENSIONS = {
     YOUTUBE: {'kodion.setup_wizard': 'false', 'kodion.setup_wizard.forced_runs': '2147483647'},
 }
 
+# Là où Catch-up TV et alkoFlix rangent les favoris, la liste à voir et les
+# lectures en cours du profil ouvert : quand l'un de ces fichiers change, les
+# rangées de l'accueil sont à recharger.
+TEMOINS_LISTES = (os.path.join(ADDON_DATA, CATCHUP, 'favourites.json'),
+                  os.path.join(ADDON_DATA, ALKOFLIX, 'favourites.db'),
+                  os.path.join(ADDON_DATA, ALKOFLIX, 'watched.db'))
+
 # Écran « Profils » de Kodi : identifiants fixés par Kodi, les mêmes dans tous les habillages.
 LISTE_PROFILS = 2
 BOUTON_ECRAN_CHOIX = 4
@@ -1441,6 +1448,27 @@ def oublier_jeton():
             os.remove(fichier)
         except OSError:
             pass
+
+
+def surveiller_listes():
+    """Tourne tant que le profil est ouvert. L'habillage ne charge les rangées
+    de l'accueil qu'une fois : sans cela, un favori qu'on vient d'ajouter n'y
+    apparaît qu'au redémarrage de Kodi. La commande est celle qu'alkoFlix
+    emploie lui-même pour recharger les rangées (elle ne touche à aucune
+    médiathèque)."""
+    def etat():
+        return [os.path.getmtime(fichier) if os.path.exists(fichier) else 0 for fichier in TEMOINS_LISTES]
+
+    moniteur = xbmc.Monitor()
+    vu = etat()
+    while not moniteur.waitForAbort(3):
+        if xbmc.getCondVisibility('Player.HasMedia'):
+            continue   # pendant un film, alkoFlix note l'avancement sans arrêt : on attend la fin
+        maintenant = etat()
+        if maintenant != vu:
+            vu = maintenant
+            xbmc.executebuiltin('UpdateLibrary(video,special://skin/foo)')
+            log('favoris ou listes modifiés : rangées rechargées')
 
 
 def menu():
