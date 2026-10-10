@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8" standalone="yes"?>
-<settings>
-    <category label="Publication">
-        <setting label="Réservé au propriétaire du dépôt" type="lsep"/>
-        <setting id="jeton" type="text" option="hidden" label="Jeton GitHub" default=""/>
-    </category>
-</settings>

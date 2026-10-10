@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-import base64
 import glob
 import html
 import json
@@ -17,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from io import BytesIO
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote
-from urllib.request import Request, urlopen
+from urllib.request import urlopen
 from xml.etree import ElementTree
 
 import xbmc
@@ -60,11 +59,6 @@ NOMS.update({'repository.jurialmunkey': "le dépôt d'Arctic Fuse 3", 'repositor
 FACULTATIFS = (LANGUE, SONS, ICONES, SAISIE, FLUX, YOUTUBE)
 
 PACKS_URL = 'https://raw.githubusercontent.com/DaRk-PrOphEt/Kodi/main/packs/'
-# Publication d'un pack depuis Kodi : réservée au propriétaire du dépôt, qui
-# saisit son jeton GitHub dans les paramètres de l'extension. Le jeton reste
-# sur l'appareil.
-API_PACKS = 'https://api.github.com/repos/DaRk-PrOphEt/Kodi/contents/packs/'
-SIGNATURE = {'name': 'DaRk-PrOphEt', 'email': '67680888+DaRk-PrOphEt@users.noreply.github.com'}
 PACK_ALKOFLIX = 'arctic-fuse-3.zip'
 # Même interface avec moins de rangées par page, pour les boîtiers modestes.
 PACK_LEGER = 'arctic-fuse-3-leger.zip'
@@ -91,9 +85,12 @@ MAITRE = xbmcvfs.translatePath('special://masterprofile/')
 PROFIL = xbmcvfs.translatePath('special://profile/')
 ADDON_DATA = os.path.join(PROFIL, 'addon_data')
 SAUVEGARDE = os.path.join(ADDON_DATA, 'script.dark-prophet', 'sauvegarde')
-# Les paramètres d'une extension sont propres à chaque profil : le jeton est
-# recopié ici pour servir aussi depuis le profil Catch-up TV.
-FICHIER_JETON = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'jeton')
+# Jusqu'à la 1.14, le propriétaire du dépôt pouvait saisir un jeton GitHub pour
+# publier un pack depuis Kodi. La fonction est retirée ; on efface ce qu'elle
+# a pu laisser sur l'appareil (le jeton y était en clair).
+RESTES_JETON = (os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'jeton'),
+                os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'settings.xml'),
+                os.path.join(ADDON_DATA, 'script.dark-prophet', 'settings.xml'))
 # Interface choisie à l'installation (« complet » ou « leger »), pour que la
 # mise à jour ne repose pas la question.
 FICHIER_INTERFACE = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'interface')
@@ -1301,7 +1298,7 @@ def nettoyer():
     xbmc.executebuiltin('Quit')
 
 
-# --- Réinitialisation et fabrication des packs -------------------------------
+# --- Réinitialisation -------------------------------
 
 def noter_etat_avant():
     """Relève, une seule fois, les réglages de Kodi que les formules vont changer."""
@@ -1411,112 +1408,6 @@ def remettre_profil_unique(nom):
         return False
 
 
-def fabriquer_pack():
-    """Zippe les réglages d'habillage du profil ouvert. Renvoie (octets, nombre de fichiers)."""
-    tampon = BytesIO()
-    nombre = 0
-    with zipfile.ZipFile(tampon, 'w', zipfile.ZIP_DEFLATED) as archive:
-        for nom in DOSSIERS:
-            racine = os.path.join(ADDON_DATA, nom)
-            for chemin, _, fichiers in os.walk(racine):
-                for fichier in fichiers:
-                    complet = os.path.join(chemin, fichier)
-                    relatif = os.path.relpath(complet, ADDON_DATA).replace(os.sep, '/')
-                    if fichier == 'skinusers.json':
-                        archive.writestr('addon_data/' + relatif, sans_codes(complet))
-                    else:
-                        archive.write(complet, 'addon_data/' + relatif)
-                    nombre += 1
-    return tampon.getvalue(), nombre
-
-
-def sans_codes(fichier):
-    """Profils internes d'Arctic Fuse 3 (Principal, Enfants…) sans leur code
-    secret : le pack part sur un dépôt public."""
-    with open(fichier, encoding='utf-8') as source:
-        profils_internes = json.load(source)
-    for profil in profils_internes:
-        profil['code'] = None
-    return json.dumps(profils_internes, indent=4, ensure_ascii=False)
-
-
-def pack_du_profil_ouvert():
-    """Nom du pack que le profil ouvert alimente, ou None si on annule."""
-    if not dans_le_profil_principal():
-        return PACK_CATCHUP
-    choix = dialog.select('Quelle interface as-tu réglée ?', ['Interface complète', 'Interface allégée (boîtiers modestes)'])
-    return (PACK_ALKOFLIX, PACK_LEGER)[choix] if choix >= 0 else None
-
-
-# --- Publication sur le dépôt (propriétaire seulement) -----------------------
-
-def jeton_de_publication():
-    jeton = xbmcaddon.Addon().getSetting('jeton').strip()
-    if jeton:
-        if not os.path.isfile(FICHIER_JETON) or open(FICHIER_JETON).read() != jeton:
-            os.makedirs(os.path.dirname(FICHIER_JETON), exist_ok=True)
-            with open(FICHIER_JETON, 'w') as sortie:
-                sortie.write(jeton)
-        return jeton
-    if os.path.isfile(FICHIER_JETON):
-        return open(FICHIER_JETON).read().strip()
-    return ''
-
-
-def github(methode, nom_pack, jeton, corps=None):
-    """Appelle l'API GitHub sur un pack. Renvoie (code HTTP, réponse décodée)."""
-    requete = Request(API_PACKS + nom_pack, method=methode,
-                      data=json.dumps(corps).encode('utf-8') if corps else None,
-                      headers={'Authorization': 'Bearer ' + jeton,
-                               'Accept': 'application/vnd.github+json',
-                               'User-Agent': 'script.dark-prophet'})
-    try:
-        with urlopen(requete, timeout=30) as reponse:
-            return reponse.status, json.loads(reponse.read() or b'{}')
-    except HTTPError as erreur:
-        return erreur.code, {}
-    except (URLError, OSError) as erreur:
-        log('github : %r' % erreur)
-        return 0, {}
-
-
-def publier_config():
-    """Envoie le pack du profil ouvert dans packs/ sur le dépôt, à la place de celui en ligne."""
-    jeton = jeton_de_publication()
-    nom_pack = pack_du_profil_ouvert()
-    if not nom_pack:
-        return
-    contenu, nombre = fabriquer_pack()
-    if not nombre:
-        dialog.ok(TITRE, "Aucun réglage d'Arctic Fuse 3 trouvé sur ce profil.")
-        return
-    if not dialog.yesno(TITRE, "Publier la configuration de ce profil sur le dépôt ?[CR]%s (%s fichiers) remplacera celui en ligne pour tout le monde." % (nom_pack, nombre)):
-        return
-    code, existant = github('GET', nom_pack, jeton)
-    if code not in (200, 404):
-        dialog.ok(TITRE, ERREURS_GITHUB.get(code, 'GitHub a répondu une erreur %s.' % code))
-        return
-    corps = {'message': 'Pack %s publié depuis Kodi' % nom_pack,
-             'content': base64.b64encode(contenu).decode('ascii'),
-             'committer': SIGNATURE, 'author': SIGNATURE}
-    if code == 200:
-        corps['sha'] = existant.get('sha')
-    code, _ = github('PUT', nom_pack, jeton, corps)
-    if code in (200, 201):
-        dialog.ok(TITRE, "%s est publié.[CR]Les nouvelles installations le recevront d'ici 5 minutes environ." % nom_pack)
-    else:
-        dialog.ok(TITRE, ERREURS_GITHUB.get(code, 'GitHub a répondu une erreur %s.' % code))
-
-
-ERREURS_GITHUB = {
-    0: 'GitHub est injoignable. Vérifie la connexion puis relance.',
-    401: "GitHub refuse le jeton : il est mal saisi ou expiré.[CR]Corrige-le dans les paramètres de l'extension.",
-    403: "Ce jeton n'a pas le droit d'écrire dans le dépôt (permission « Contents : Read and write »).",
-    404: "Ce jeton ne donne pas accès au dépôt Kodi.",
-    409: "Le pack en ligne a changé pendant l'envoi. Relance la publication.",
-}
-
-
 def rechercher(genre='', sections=''):
     """Recherche par titre limitée au catalogue d'alkoFlix : on ne propose que
     ce qui a des liens. Lancée par les rubriques « Rechercher » des pages :
@@ -1544,8 +1435,17 @@ def rechercher(genre='', sections=''):
     xbmc.executebuiltin('ActivateWindow(Videos,"%s",return)' % chemin)
 
 
+def oublier_jeton():
+    for fichier in RESTES_JETON:
+        try:
+            os.remove(fichier)
+        except OSError:
+            pass
+
+
 def menu():
     lever_verrou_profils()
+    oublier_jeton()
     if dans_le_profil_principal():
         entrees = [
             ('Formule alkoFlix', formule_alkoflix),
@@ -1569,8 +1469,6 @@ def menu():
             ('Remettre la configuration Catch-up TV', reappliquer_catchup),
             ('Nettoyer Kodi', nettoyer),
         ]
-    if jeton_de_publication():
-        entrees.append(('Publier la configuration de ce profil sur le dépôt', publier_config))
     choix = dialog.select(TITRE, [libelle for libelle, _ in entrees])
     if choix >= 0:
         entrees[choix][1]()
