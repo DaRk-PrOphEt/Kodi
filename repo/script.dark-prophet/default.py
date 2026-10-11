@@ -42,12 +42,14 @@ SAISIE = 'plugin.program.autocompletion'
 # d'avance, Kodi ne les réclame plus au premier replay ni à la première bande-annonce.
 FLUX = 'inputstream.adaptive'
 YOUTUBE = 'plugin.video.youtube'
+# « Épisode suivant » à la fin d'un épisode : alkoFlix s'en sert d'office, mais ne l'installe pas.
+UPNEXT = 'service.upnext'
 TMDBHELPER = 'plugin.video.themoviedb.helper'
 LECTEUR = 'alkoflix.select.json'
 NOMS = {SKIN: 'Arctic Fuse 3', ALKOFLIX: 'alkoFlix', CATCHUP: 'Catch-up TV & More',
         LANGUE: 'la langue française', SONS: 'les sons Android TV', ICONES: "les icônes d'alkoFlix",
         SAISIE: 'les suggestions du clavier', FLUX: 'la lecture des replays (InputStream Adaptive)',
-        YOUTUBE: 'YouTube (bandes-annonces)'}
+        YOUTUBE: 'YouTube (bandes-annonces)', UPNEXT: "Up Next (l'épisode suivant)"}
 # Dépôt officiel de chaque extension. Le script les installe lui-même : Kodi
 # refuse d'installer un dépôt en tant que dépendance d'une autre extension.
 DEPOTS = {SKIN: 'repository.jurialmunkey', ALKOFLIX: 'repository.alkoflix', CATCHUP: 'catchuptvandmore.kodi.release',
@@ -56,7 +58,7 @@ NOMS.update({VSTREAM: 'vStream', 'repository.vstream': 'le dépôt de vStream'})
 NOMS.update({'repository.jurialmunkey': "le dépôt d'Arctic Fuse 3", 'repository.alkoflix': "le dépôt d'alkoFlix",
              'catchuptvandmore.kodi.release': 'le dépôt de Catch-up TV'})
 # Le confort : si l'un d'eux ne s'installe pas, la formule continue quand même.
-FACULTATIFS = (LANGUE, SONS, ICONES, SAISIE, FLUX, YOUTUBE)
+FACULTATIFS = (LANGUE, SONS, ICONES, SAISIE, FLUX, YOUTUBE, UPNEXT)
 
 PACKS_URL = 'https://raw.githubusercontent.com/DaRk-PrOphEt/Kodi/main/packs/'
 PACK_ALKOFLIX = 'arctic-fuse-3.zip'
@@ -947,7 +949,7 @@ def formule_alkoflix():
         return
     version = choisir_version()
     noter_etat_avant()
-    if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES) + ((VSTREAM,) if version == 'full' else ()) + (FLUX, YOUTUBE)):
+    if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES) + ((VSTREAM,) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):
         return
     franciser()
     regler_confort()
@@ -968,7 +970,7 @@ def formule_catchup():
         return
     version = choisir_version()
     noter_etat_avant()
-    if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES, CATCHUP) + ((VSTREAM,) if version == 'full' else ()) + (FLUX, YOUTUBE)):
+    if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES, CATCHUP) + ((VSTREAM,) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):
         return
     franciser()
     regler_confort()
@@ -990,7 +992,7 @@ def mettre_a_jour():
     if not dialog.yesno(TITRE, "Mettre l'interface à jour ?[CR]Les réglages actuels de l'habillage seront remplacés par la dernière version (« Réinitialiser les réglages » les remet)."):
         return
     version = choisir_version(redemander=False)
-    if not installer_tout((LANGUE, SONS, SAISIE, ICONES) + ((VSTREAM,) if version == 'full' else ()) + (FLUX, YOUTUBE)):
+    if not installer_tout((LANGUE, SONS, SAISIE, ICONES) + ((VSTREAM,) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):
         return
     franciser()
     regler_confort(dossier_du_profil(PROFIL_CATCHUP) if PROFIL_CATCHUP in profils() else None)
