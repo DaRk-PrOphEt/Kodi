@@ -412,14 +412,18 @@ VERSIONS = (('leger', 'Allégée : pour les boîtiers modestes'),
 
 def choisir_version(redemander=True):
     """Version à installer sur le profil alkoFlix : « leger », « complet » (la
-    Base) ou « full ». Le choix est retenu : avec redemander=False (mise à
-    jour), on le reprend sans reposer la question."""
+    Base) ou « full ». Le choix est retenu : avec redemander=False, on le
+    reprend sans reposer la question ; sinon la question part du choix retenu."""
     choix = ''
-    if not redemander and os.path.isfile(FICHIER_INTERFACE):
+    if os.path.isfile(FICHIER_INTERFACE):
         choix = open(FICHIER_INTERFACE).read().strip()
-    if choix not in [cle for cle, _ in VERSIONS]:
-        numero = dialog.select('Quelle version ?', [libelle for _, libelle in VERSIONS], preselect=1)
-        choix = VERSIONS[numero][0] if numero >= 0 else 'complet'
+    cles = [cle for cle, _ in VERSIONS]
+    if redemander or choix not in cles:
+        numero = dialog.select('Quelle version ?', [libelle for _, libelle in VERSIONS],
+                               preselect=cles.index(choix) if choix in cles else 1)
+        if numero < 0:
+            return None   # « Annuler » : on ne fait rien
+        choix = VERSIONS[numero][0]
         os.makedirs(os.path.dirname(FICHIER_INTERFACE), exist_ok=True)
         with open(FICHIER_INTERFACE, 'w') as sortie:
             sortie.write(choix)
@@ -948,6 +952,8 @@ def formule_alkoflix():
     if not dialog.yesno(TITRE, "Installer Arctic Fuse 3 et alkoFlix avec la configuration de DaRk-PrOphEt ?[CR]Kodi passera en français. Les réglages actuels de cet habillage seront remplacés (« Réinitialiser les réglages » les remet)."):
         return
     version = choisir_version()
+    if not version:
+        return
     noter_etat_avant()
     if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES) + ((VSTREAM,) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):
         return
@@ -969,6 +975,8 @@ def formule_catchup():
     if not dialog.yesno(TITRE, "Installer Arctic Fuse 3, alkoFlix et Catch-up TV ?[CR]Au démarrage, Kodi proposera deux entrées : « %s » et « %s ».[CR]Kodi passera en français. Les réglages actuels de l'habillage seront remplacés (« Réinitialiser les réglages » les remet)." % (PROFIL_ALKOFLIX, PROFIL_CATCHUP)):
         return
     version = choisir_version()
+    if not version:
+        return
     noter_etat_avant()
     if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES, CATCHUP) + ((VSTREAM,) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):
         return
@@ -991,7 +999,11 @@ def mettre_a_jour():
     (icônes, suggestions du clavier, clavier français, YouTube, touche Retour…)."""
     if not dialog.yesno(TITRE, "Mettre l'interface à jour ?[CR]Les réglages actuels de l'habillage seront remplacés par la dernière version (« Réinitialiser les réglages » les remet)."):
         return
-    version = choisir_version(redemander=False)
+    # La question est reposée, partant de la version actuelle : c'est par ici qu'on passe
+    # d'une version à l'autre (de la Base à la Full par exemple) sans tout réinstaller.
+    version = choisir_version()
+    if not version:
+        return
     if not installer_tout((LANGUE, SONS, SAISIE, ICONES) + ((VSTREAM,) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):
         return
     franciser()
