@@ -125,7 +125,7 @@ PROFILS_A_EFFACER = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'p
 ETAT_AVANT = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'etat_avant.json')
 REGLAGES_KODI = ('lookandfeel.skin', 'lookandfeel.soundskin', 'locale.keyboardlayouts', 'locale.country',
                  'addons.updatemode', 'locale.audiolanguage', 'videoplayer.preferdefaultflag',
-                 'locale.subtitlelanguage', 'subtitles.languages', 'filelists.showparentdiritems',
+                 'locale.subtitlelanguage', 'subtitles.languages', 'filelists.showparentdiritems', 'videoscreen.limitgui',
                  'locale.language')   # la langue en dernier : Kodi recharge tout
 
 # Touche Retour pendant un film : arrête la lecture (d'origine, elle revient aux
@@ -341,10 +341,15 @@ def poser_touches(dossier):
 
 def regler_confort(autre_profil=None):
     """Les petits réglages qui évitent des questions et des gestes : pas de
-    ligne « .. » en tête des listes, Retour arrête le film, suggestions du
-    clavier en français, YouTube sans assistant. autre_profil : dossier d'un
+    ligne « .. » en tête des listes, interface en 1080p sur Android, Retour
+    arrête le film, suggestions du clavier en français, YouTube sans
+    assistant. autre_profil : dossier d'un
     profil fermé à régler de la même façon."""
     regler('filelists.showparentdiritems', False)
+    # Android seulement : l'interface plafonnée à 1080p. Sur un boîtier 4K, dessiner les
+    # menus en 4K alourdit Arctic Fuse 3 pour un gain invisible à la télé ; les films,
+    # eux, restent en 4K. Ailleurs le réglage n'existe pas et la commande est sans effet.
+    regler('videoscreen.limitgui', 1080)
     for addon_id, valeurs in REGLAGES_EXTENSIONS.items():
         if not installe(addon_id):
             continue
@@ -360,7 +365,10 @@ def regler_confort(autre_profil=None):
         poser_touches(PROFIL)
         if autre_profil:
             poser_touches(autre_profil)
-            ecrire_reglages(os.path.join(autre_profil, 'guisettings.xml'), {'filelists.showparentdiritems': 'false'})
+            reglages = {'filelists.showparentdiritems': 'false'}
+            if xbmc.getCondVisibility('System.Platform.Android'):
+                reglages['videoscreen.limitgui'] = '1080'
+            ecrire_reglages(os.path.join(autre_profil, 'guisettings.xml'), reglages)
         xbmc.executebuiltin('Action(reloadkeymaps)')
     except OSError as erreur:
         log('touches : %r' % erreur)
