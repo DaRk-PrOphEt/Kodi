@@ -49,6 +49,7 @@ UPNEXT = 'service.upnext'
 INTRO = 'plugin.video.tidb'
 TMDBHELPER = 'plugin.video.themoviedb.helper'
 LECTEUR = 'alkoflix.select.json'
+ICONE_SCRIPT = 'screwdriver-wrench.png'   # icône d'Arctic Fuse 3 pour le raccourci du menu Options
 NOMS = {SKIN: 'Arctic Fuse 3', ALKOFLIX: 'alkoFlix', CATCHUP: 'Catch-up TV & More',
         LANGUE: 'la langue française', SONS: 'les sons Android TV', ICONES: "les icônes d'alkoFlix",
         SAISIE: 'les suggestions du clavier', FLUX: 'la lecture des replays (InputStream Adaptive)',
@@ -104,6 +105,8 @@ FICHIER_INTERFACE = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'i
 # Fonds d'écran proposés pour le profil alkoFlix (une image fixe : aucun effet sur la fluidité).
 FONDS = (('Rouge', 'alkoflix-rouge.jpg'), ('Bleu', 'alkoflix-bleu.jpg'))
 FICHIER_FOND = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'fond')
+# Pendant une pause de Lumio : l'état de la source alkoPaste à retrouver à sa reprise.
+FICHIER_LUMIO = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'lumio_pause')
 DOSSIER_FONDS = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet')
 FOND_HABILLAGE = 'special://skin/extras/backgrounds/blur/purple_blur.jpg'   # celui des packs
 FOND_CATCHUP = 'catchup.jpg'   # l'image officielle de Catch-up TV & More, assombrie
@@ -514,8 +517,8 @@ def hors_de_l_habillage(action):
 
 def appliquer_ici(archive, fond=None, bouton_catchup=None, vstream=None):
     """Applique un pack au profil ouvert et active l'habillage.
-    bouton_catchup, vstream : True ou False pour ajuster le menu Options et
-    les rubriques de l'accueil (profil alkoFlix seulement)."""
+    bouton_catchup, vstream : True ou False pour ajuster le bouton Catch-up TV du
+    menu Options et les rubriques de l'accueil (profil alkoFlix seulement)."""
     if archive is None:
         return changer_habillage(SKIN)
 
@@ -524,27 +527,32 @@ def appliquer_ici(archive, fond=None, bouton_catchup=None, vstream=None):
         log('%s fichiers écrits' % ecrire_pack(archive, ADDON_DATA))
         if fond:
             poser_fond(fond)
-        if bouton_catchup is not None:
-            ajuster_menu_options(bouton_catchup)
+        ajuster_menu_options(bouton_catchup)
         if vstream is not None:
             ajuster_rubriques_vstream(vstream)
 
     return hors_de_l_habillage(appliquer)
 
 
-def ajuster_menu_options(avec_catchup):
-    """Menu Options d'Arctic Fuse 3 (profil alkoFlix) : un bouton pour passer au
-    profil Catch-up TV, seulement s'il existe. Le pack Catch-up TV porte déjà
-    le bouton du retour vers alkoFlix."""
-    fichier = os.path.join(ADDON_DATA, 'script.skinvariables', 'nodes', SKIN, 'skinvariables-shortcut-powermenu.json')
+def ajuster_menu_options(avec_catchup=None, racine=None):
+    """Menu Options d'Arctic Fuse 3 : un raccourci vers ce script, et (profil
+    alkoFlix, avec_catchup True ou False) un bouton pour passer au profil
+    Catch-up TV seulement s'il existe. Le pack Catch-up TV porte déjà le bouton
+    du retour vers alkoFlix. racine : addon_data d'un profil fermé."""
+    fichier = os.path.join(racine or ADDON_DATA, 'script.skinvariables', 'nodes', SKIN, 'skinvariables-shortcut-powermenu.json')
     try:
         with open(fichier, encoding='utf-8') as source:
-            entrees = [e for e in json.load(source) if not str(e.get('path', '')).startswith('LoadProfile(')]
+            entrees = [e for e in json.load(source) if e.get('guid') != 'guid-dpscript']
+        if avec_catchup is not None:
+            entrees = [e for e in entrees if not str(e.get('path', '')).startswith('LoadProfile(')]
+        # Juste avant « Quitter », qui reste en dernier.
         if avec_catchup:
-            # Juste avant « Quitter », qui reste en dernier.
             entrees.insert(max(len(entrees) - 1, 0), {
                 'icon': 'special://skin/extras/icons/livetv.png', 'label': PROFIL_CATCHUP,
                 'path': 'LoadProfile(%s)' % PROFIL_CATCHUP, 'target': '', 'guid': 'guid-dpcatchup'})
+        entrees.insert(max(len(entrees) - 1, 0), {
+            'icon': 'special://skin/extras/icons/%s' % ICONE_SCRIPT, 'label': TITRE,
+            'path': 'RunScript(script.dark-prophet)', 'target': '', 'guid': 'guid-dpscript'})
         with open(fichier, 'w', encoding='utf-8') as sortie:
             json.dump(entrees, sortie, indent=4, ensure_ascii=False)
     except (OSError, ValueError) as erreur:
@@ -1042,6 +1050,7 @@ def mettre_a_jour():
         dossier = dossier_du_profil(PROFIL_CATCHUP)
         copier_extensions_actives(dossier)
         ecrire_pack(telecharger_pack(PACK_CATCHUP, muet=True) or archive, os.path.join(dossier, 'addon_data'))
+        ajuster_menu_options(racine=os.path.join(dossier, 'addon_data'))
         fond = telecharger_fond(FOND_CATCHUP)
         if fond:
             poser_fond(fond, os.path.join(dossier, 'addon_data'))
@@ -1065,7 +1074,7 @@ def ajouter_catchup():
         return
     if not installer_tout((CATCHUP, FLUX)):
         return
-    hors_de_l_habillage(lambda: ajuster_menu_options(True))
+    hors_de_l_habillage(lambda: ajuster_menu_options(True))   # pose aussi le raccourci vers ce script
     preparer_profil_catchup(telecharger_pack(PACK_CATCHUP, muet=True) or telecharger_pack(PACK_ALKOFLIX, muet=True))
 
 
@@ -1085,6 +1094,7 @@ def preparer_profil_catchup(pack):
     regler_confort(dossier)
     if pack is not None:
         ecrire_pack(pack, os.path.join(dossier, 'addon_data'))
+        ajuster_menu_options(racine=os.path.join(dossier, 'addon_data'))
         fond = telecharger_fond(FOND_CATCHUP)
         if fond:
             poser_fond(fond, os.path.join(dossier, 'addon_data'))
@@ -1358,42 +1368,76 @@ def lumio():
         return
     alkoflix = xbmcaddon.Addon(ALKOFLIX)
 
-    def actif():
-        return alkoflix.getSetting('provider.lumio') == 'true' and bool(alkoflix.getSetting('lumio.manifest_url'))
+    def lien():
+        return alkoflix.getSetting('lumio.manifest_url')
 
-    if not actif() and not dialog.yesno(TITRE, "Lumio ajoute des sources à alkoFlix. Il te faut d'abord, sur [B]mylumio.tv[/B] : un profil, relié à ton débrideur (AllDebrid), avec l'affichage « Détaillé ».[CR]C'est fait ?", nolabel='Pas encore', yeslabel="C'est fait"):
+    def actif():
+        return alkoflix.getSetting('provider.lumio') == 'true' and bool(lien())
+
+    def coller():
+        lumio_par_telephone(alkoflix)
+
+    def saisir_ici():
+        saisie = dialog.input('Mon lien Lumio')
+        if not saisie:
+            return
+        if not lien_lumio(saisie):
+            dialog.ok(TITRE, "Ce n'est pas un lien Lumio : il commence par https:// et se termine en général par manifest.json.[CR]Rien n'a été changé.")
+            return
+        activer_lumio(alkoflix, lien_lumio(saisie))
+
+    def mettre_en_pause():
+        # Lumio en panne ou capricieux : on repasse sur alkoPaste sans rien effacer, et on
+        # retient si sa source était coupée pour la recouper au retour de Lumio.
+        coupee = alkoflix.getSetting('provider.alkopaste') == 'false'
+        alkoflix.setSetting('provider.lumio', 'false')
+        regler_source_alkopaste(alkoflix, True)
+        os.makedirs(os.path.dirname(FICHIER_LUMIO), exist_ok=True)
+        with open(FICHIER_LUMIO, 'w') as sortie:
+            sortie.write('coupee' if coupee else 'gardee')
+
+    def reprendre():
+        alkoflix.setSetting('provider.lumio', 'true')
+        if os.path.isfile(FICHIER_LUMIO):
+            if open(FICHIER_LUMIO).read().strip() == 'coupee':
+                regler_source_alkopaste(alkoflix, False)
+            os.remove(FICHIER_LUMIO)
+
+    def effacer():
+        if dialog.yesno(TITRE, "Effacer ton lien Lumio de cet appareil ?[CR]La source alkoPaste est remise en service. Pour revenir à Lumio, il faudra recoller le lien."):
+            alkoflix.setSetting('provider.lumio', 'false')
+            alkoflix.setSetting('lumio.manifest_url', '')
+            regler_source_alkopaste(alkoflix, True)
+            if os.path.isfile(FICHIER_LUMIO):
+                os.remove(FICHIER_LUMIO)
+
+    if not lien() and not dialog.yesno(TITRE, "Lumio ajoute des sources à alkoFlix. Il te faut d'abord, sur [B]mylumio.tv[/B] : un profil, relié à ton débrideur (AllDebrid), avec l'affichage « Détaillé ».[CR]C'est fait ?", nolabel='Pas encore', yeslabel="C'est fait"):
         return
     while True:
         etait_actif = actif()
         source = alkoflix.getSetting('provider.alkopaste') != 'false'
-        lignes = ['Coller mon lien depuis mon téléphone…', 'Saisir mon lien ici…']
         if etait_actif:
-            lignes.append('Source alkoPaste : %s' % ('en service (en double avec Lumio)' if source else 'coupée (place libérée)'))
-            lignes.append('Désactiver Lumio')
-        choix = dialog.select('Lumio : %s' % ('activé' if etait_actif else 'pas encore réglé'), lignes)
+            titre = 'Lumio : activé'
+            entrees = [('Mettre Lumio en pause (repasser sur alkoPaste)', mettre_en_pause),
+                       ('Source alkoPaste : %s' % ('en service (en double avec Lumio)' if source else 'coupée (place libérée)'),
+                        lambda: regler_source_alkopaste(alkoflix, not source)),
+                       ('Changer mon lien depuis mon téléphone…', coller), ('Saisir mon lien ici…', saisir_ici),
+                       ('Effacer mon lien Lumio', effacer)]
+        elif lien():
+            titre = 'Lumio : en pause, alkoPaste en service'
+            entrees = [('Réactiver Lumio', reprendre),
+                       ('Changer mon lien depuis mon téléphone…', coller), ('Saisir mon lien ici…', saisir_ici),
+                       ('Effacer mon lien Lumio', effacer)]
+        else:
+            titre = 'Lumio : pas encore réglé'
+            entrees = [('Coller mon lien depuis mon téléphone…', coller), ('Saisir mon lien ici…', saisir_ici)]
+        choix = dialog.select(titre, [libelle for libelle, _ in entrees])
         if choix < 0:
             return
-        if choix == 0:
-            lumio_par_telephone(alkoflix)
-        elif choix == 1:
-            saisie = dialog.input('Mon lien Lumio')
-            if not saisie:
-                continue
-            lien = lien_lumio(saisie)
-            if not lien:
-                dialog.ok(TITRE, "Ce n'est pas un lien Lumio : il commence par https:// et se termine en général par manifest.json.[CR]Rien n'a été changé.")
-                continue
-            activer_lumio(alkoflix, lien)
-        elif choix == 2:
-            regler_source_alkopaste(alkoflix, not source)
-            continue
-        else:
-            if dialog.yesno(TITRE, "Désactiver Lumio et effacer son lien de cet appareil ?[CR]La source alkoPaste est remise en service."):
-                alkoflix.setSetting('provider.lumio', 'false')
-                alkoflix.setSetting('lumio.manifest_url', '')
-                regler_source_alkopaste(alkoflix, True)
-            continue
-        if actif() and not etait_actif:
+        entrees[choix][1]()
+        if actif() and not etait_actif and entrees[choix][1] in (coller, saisir_ici):
+            if os.path.isfile(FICHIER_LUMIO):
+                os.remove(FICHIER_LUMIO)   # un lien recollé pendant une pause : on repart de zéro
             # Lumio rend déjà les liens d'alkoPaste (sa source « LESALKODIQUES ») : la garder
             # en plus, c'est une base de liens à télécharger et à tenir à jour pour rien.
             if dialog.yesno(TITRE, "Lumio est activé.[CR]Couper la source alkoPaste d'alkoFlix ? Lumio rend déjà ses liens, et l'appareil n'a plus à garder cette base : conseillé sur un boîtier qui manque de place.[CR]En la gardant, tu as encore des liens si Lumio tombe en panne.", nolabel='La garder', yeslabel='La couper'):
