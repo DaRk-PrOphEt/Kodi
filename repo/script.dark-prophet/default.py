@@ -170,6 +170,9 @@ REGLAGES_EXTENSIONS = {
     TMDBHELPER: {'only_resolve_strm': 'true'},
     # TheIntroDB : pas de statistiques d'utilisation envoyées.
     INTRO: {'anonymous_usage_reporting': 'false'},
+    # « Info & Extra » ouvre la fenêtre d'information d'Arctic Fuse 3 (la même que la touche
+    # Info) au lieu de celle d'alkoFlix : même allure partout, et les notes par épisode.
+    ALKOFLIX: {'info_extra.window': 'false'},
 }
 
 # Là où Catch-up TV et alkoFlix rangent les favoris, la liste à voir et les
