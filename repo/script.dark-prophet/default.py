@@ -1340,9 +1340,18 @@ def lien_lumio(texte):
     return lien
 
 
+def regler_lumio(alkoflix, en_service):
+    """Allume ou éteint Lumio sans toucher au lien. Allumé, le « mode alkoFlix » passe
+    « En secours » : Lumio est interrogé en premier et les sources d'alkoFlix ne servent
+    que s'il ne rend pas assez de liens. Resté « Par défaut », c'est l'inverse : alkoFlix
+    cherche d'abord dans ses propres sources et Lumio ne sert presque jamais."""
+    alkoflix.setSetting('provider.lumio', 'true' if en_service else 'false')
+    alkoflix.setSetting('sources.alkoflix_mode', '1' if en_service else '0')
+
+
 def activer_lumio(alkoflix, lien):
     alkoflix.setSetting('lumio.manifest_url', lien)
-    alkoflix.setSetting('provider.lumio', 'true')
+    regler_lumio(alkoflix, True)
 
 
 def lumio_par_telephone(alkoflix):
@@ -1390,14 +1399,14 @@ def lumio():
         # Lumio en panne ou capricieux : on repasse sur alkoPaste sans rien effacer, et on
         # retient si sa source était coupée pour la recouper au retour de Lumio.
         coupee = alkoflix.getSetting('provider.alkopaste') == 'false'
-        alkoflix.setSetting('provider.lumio', 'false')
+        regler_lumio(alkoflix, False)
         regler_source_alkopaste(alkoflix, True)
         os.makedirs(os.path.dirname(FICHIER_LUMIO), exist_ok=True)
         with open(FICHIER_LUMIO, 'w') as sortie:
             sortie.write('coupee' if coupee else 'gardee')
 
     def reprendre():
-        alkoflix.setSetting('provider.lumio', 'true')
+        regler_lumio(alkoflix, True)
         if os.path.isfile(FICHIER_LUMIO):
             if open(FICHIER_LUMIO).read().strip() == 'coupee':
                 regler_source_alkopaste(alkoflix, False)
@@ -1405,12 +1414,14 @@ def lumio():
 
     def effacer():
         if dialog.yesno(TITRE, "Effacer ton lien Lumio de cet appareil ?[CR]La source alkoPaste est remise en service. Pour revenir à Lumio, il faudra recoller le lien."):
-            alkoflix.setSetting('provider.lumio', 'false')
+            regler_lumio(alkoflix, False)
             alkoflix.setSetting('lumio.manifest_url', '')
             regler_source_alkopaste(alkoflix, True)
             if os.path.isfile(FICHIER_LUMIO):
                 os.remove(FICHIER_LUMIO)
 
+    if actif():
+        regler_lumio(alkoflix, True)   # activé avec une version d'avant la 1.16.2 : le mode n'était pas posé
     if not lien() and not dialog.yesno(TITRE, "Lumio ajoute des sources à alkoFlix. Il te faut d'abord, sur [B]mylumio.tv[/B] : un profil, relié à ton débrideur (AllDebrid), avec l'affichage « Détaillé ».[CR]C'est fait ?", nolabel='Pas encore', yeslabel="C'est fait"):
         return
     while True:
