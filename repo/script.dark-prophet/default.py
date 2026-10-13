@@ -15,7 +15,7 @@ import zipfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from io import BytesIO
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, quote
+from urllib.parse import parse_qs, quote, urlparse
 from urllib.request import urlopen
 from xml.etree import ElementTree
 
@@ -44,6 +44,9 @@ FLUX = 'inputstream.adaptive'
 YOUTUBE = 'plugin.video.youtube'
 # « Épisode suivant » à la fin d'un épisode : alkoFlix s'en sert d'office, mais ne l'installe pas.
 UPNEXT = 'service.upnext'
+# Version « Full » seulement : un bouton « Passer l'intro / le résumé / le générique »
+# pendant la lecture, quand l'épisode est connu de la base communautaire TheIntroDB.
+INTRO = 'plugin.video.tidb'
 TMDBHELPER = 'plugin.video.themoviedb.helper'
 LECTEUR = 'alkoflix.select.json'
 NOMS = {SKIN: 'Arctic Fuse 3', ALKOFLIX: 'alkoFlix', CATCHUP: 'Catch-up TV & More',
@@ -53,12 +56,13 @@ NOMS = {SKIN: 'Arctic Fuse 3', ALKOFLIX: 'alkoFlix', CATCHUP: 'Catch-up TV & Mor
 # Dépôt officiel de chaque extension. Le script les installe lui-même : Kodi
 # refuse d'installer un dépôt en tant que dépendance d'une autre extension.
 DEPOTS = {SKIN: 'repository.jurialmunkey', ALKOFLIX: 'repository.alkoflix', CATCHUP: 'catchuptvandmore.kodi.release',
-          VSTREAM: 'repository.vstream'}
+          VSTREAM: 'repository.vstream', INTRO: 'repository.tidb.repo'}
 NOMS.update({VSTREAM: 'vStream', 'repository.vstream': 'le dépôt de vStream'})
+NOMS.update({INTRO: "TheIntroDB (passer l'intro)", 'repository.tidb.repo': 'le dépôt de TheIntroDB'})
 NOMS.update({'repository.jurialmunkey': "le dépôt d'Arctic Fuse 3", 'repository.alkoflix': "le dépôt d'alkoFlix",
              'catchuptvandmore.kodi.release': 'le dépôt de Catch-up TV'})
 # Le confort : si l'un d'eux ne s'installe pas, la formule continue quand même.
-FACULTATIFS = (LANGUE, SONS, ICONES, SAISIE, FLUX, YOUTUBE, UPNEXT)
+FACULTATIFS = (LANGUE, SONS, ICONES, SAISIE, FLUX, YOUTUBE, UPNEXT, INTRO, 'repository.tidb.repo')
 
 PACKS_URL = 'https://raw.githubusercontent.com/DaRk-PrOphEt/Kodi/main/packs/'
 PACK_ALKOFLIX = 'arctic-fuse-3.zip'
@@ -126,11 +130,13 @@ ETAT_AVANT = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'etat_ava
 REGLAGES_KODI = ('lookandfeel.skin', 'lookandfeel.soundskin', 'locale.keyboardlayouts', 'locale.country',
                  'addons.updatemode', 'locale.audiolanguage', 'videoplayer.preferdefaultflag',
                  'locale.subtitlelanguage', 'subtitles.languages', 'filelists.showparentdiritems', 'videoscreen.limitgui',
+                 'myvideos.selectaction', 'myvideos.playaction',
                  'locale.language')   # la langue en dernier : Kodi recharge tout
 
 # Touche Retour pendant un film : arrête la lecture (d'origine, elle revient aux
 # menus en laissant le film tourner derrière). Avec les commandes à l'écran
 # ouvertes, Retour ne fait que les refermer.
+REPRENDRE = 2   # valeur de « Reprendre » dans les réglages Vidéos de Kodi
 NOM_TOUCHES = 'dark-prophet.xml'
 TOUCHES = """<?xml version="1.0" encoding="UTF-8"?>
 <keymap>
@@ -149,6 +155,13 @@ TOUCHES = """<?xml version="1.0" encoding="UTF-8"?>
 REGLAGES_EXTENSIONS = {
     SAISIE: {'autocomplete_lang': 'fr'},
     YOUTUBE: {'kodion.setup_wizard': 'false', 'kodion.setup_wizard.forced_runs': '2147483647'},
+    # L'épisode suivant s'enchaîne aussi dans une liste de lecture et sur une série déjà vue.
+    UPNEXT: {'enablePlaylist': 'true', 'includeWatched': 'true'},
+    # Conseil des auteurs d'alkoFlix : sans ce réglage, la lecture lancée depuis une fiche
+    # de l'habillage peut faire planter Kodi sur certains appareils.
+    TMDBHELPER: {'only_resolve_strm': 'true'},
+    # TheIntroDB : pas de statistiques d'utilisation envoyées.
+    INTRO: {'anonymous_usage_reporting': 'false'},
 }
 
 # Là où Catch-up TV et alkoFlix rangent les favoris, la liste à voir et les
@@ -341,11 +354,15 @@ def poser_touches(dossier):
 
 def regler_confort(autre_profil=None):
     """Les petits réglages qui évitent des questions et des gestes : pas de
-    ligne « .. » en tête des listes, interface en 1080p sur Android, Retour
-    arrête le film, suggestions du clavier en français, YouTube sans
-    assistant. autre_profil : dossier d'un
-    profil fermé à régler de la même façon."""
+    ligne « .. » en tête des listes, une seule question « reprendre ? »,
+    interface en 1080p sur Android, Retour arrête le film, suggestions du
+    clavier en français, YouTube sans assistant, épisode suivant enchaîné.
+    autre_profil : dossier d'un profil fermé à régler de la même façon."""
     regler('filelists.showparentdiritems', False)
+    # « Reprendre » aux deux endroits : Kodi ne demande plus « lire ou reprendre ? » sur
+    # l'affiche puis de nouveau sur le lien, alkoFlix pose la question une seule fois.
+    regler('myvideos.selectaction', REPRENDRE)
+    regler('myvideos.playaction', REPRENDRE)
     # Android seulement : l'interface plafonnée à 1080p. Sur un boîtier 4K, dessiner les
     # menus en 4K alourdit Arctic Fuse 3 pour un gain invisible à la télé ; les films,
     # eux, restent en 4K. Ailleurs le réglage n'existe pas et la commande est sans effet.
@@ -365,7 +382,8 @@ def regler_confort(autre_profil=None):
         poser_touches(PROFIL)
         if autre_profil:
             poser_touches(autre_profil)
-            reglages = {'filelists.showparentdiritems': 'false'}
+            reglages = {'filelists.showparentdiritems': 'false', 'myvideos.selectaction': str(REPRENDRE),
+                        'myvideos.playaction': str(REPRENDRE)}
             if xbmc.getCondVisibility('System.Platform.Android'):
                 reglages['videoscreen.limitgui'] = '1080'
             ecrire_reglages(os.path.join(autre_profil, 'guisettings.xml'), reglages)
@@ -415,7 +433,7 @@ def telecharger_pack(nom, muet=False):
 
 VERSIONS = (('leger', 'Allégée : pour les boîtiers modestes'),
             ('complet', 'Base : interface complète'),
-            ('full', 'Full : Base + vStream'))
+            ('full', "Full : Base + vStream + bouton « Passer l'intro »"))
 
 
 def choisir_version(redemander=True):
@@ -963,7 +981,7 @@ def formule_alkoflix():
     if not version:
         return
     noter_etat_avant()
-    if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES) + ((VSTREAM,) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):
+    if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES) + ((VSTREAM, INTRO) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):
         return
     franciser()
     regler_confort()
@@ -986,7 +1004,7 @@ def formule_catchup():
     if not version:
         return
     noter_etat_avant()
-    if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES, CATCHUP) + ((VSTREAM,) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):
+    if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES, CATCHUP) + ((VSTREAM, INTRO) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):
         return
     franciser()
     regler_confort()
@@ -1012,7 +1030,7 @@ def mettre_a_jour():
     version = choisir_version()
     if not version:
         return
-    if not installer_tout((LANGUE, SONS, SAISIE, ICONES) + ((VSTREAM,) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):
+    if not installer_tout((LANGUE, SONS, SAISIE, ICONES) + ((VSTREAM, INTRO) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):
         return
     franciser()
     regler_confort(dossier_du_profil(PROFIL_CATCHUP) if PROFIL_CATCHUP in profils() else None)
@@ -1172,23 +1190,51 @@ def image_qr(texte, fichier):
 
 
 PAGE_TELEPHONE = """<!doctype html><html lang="fr"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>Identifiants Catch-up TV</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>%(titre)s</title>
 <style>body{font:17px/1.4 system-ui,sans-serif;margin:0;padding:20px;background:#14131c;color:#f0eef8}
 h1{font-size:22px;margin:0 0 6px}p{color:#aaa6bd;margin:0 0 18px}fieldset{border:1px solid #33304a;border-radius:10px;margin:0 0 14px;padding:12px}
 legend{font-weight:700;padding:0 6px}label{display:block;font-size:14px;color:#aaa6bd;margin-top:8px}
 input{width:100%%;box-sizing:border-box;font:inherit;padding:10px;border-radius:8px;border:1px solid #4a4666;background:#1d1b29;color:inherit}
 button{width:100%%;font:inherit;font-weight:700;padding:14px;border:0;border-radius:10px;background:#7b5cf0;color:#fff}
-.ok{background:#17402a;border-radius:10px;padding:14px;margin-bottom:18px}</style></head><body>
-<h1>Identifiants Catch-up TV</h1><p>Ils sont enregistrés sur ton appareil Kodi, nulle part ailleurs. Laisse un mot de passe vide pour garder celui déjà enregistré.</p>
+.ok,.non{background:#17402a;border-radius:10px;padding:14px;margin-bottom:18px}.non{background:#4a1d24}</style></head><body>
+<h1>%(titre)s</h1><p>%(consigne)s</p>
 %(message)s<form method="post">%(champs)s<button type="submit">Enregistrer</button></form></body></html>"""
 
 
 def identifiants_par_telephone():
-    """Affiche une adresse (et son QR code) à ouvrir sur un téléphone du même
-    réseau : une page y demande les identifiants et les enregistre dans les
-    réglages de Catch-up TV du profil ouvert. Le serveur ne vit que le temps
-    de la fenêtre, et son adresse contient un code tiré au hasard."""
+    """Les identifiants de replay saisis sur un téléphone : enregistrés dans les
+    réglages de Catch-up TV du profil ouvert."""
     catchup = xbmcaddon.Addon(CATCHUP)
+
+    def champs():
+        return ''.join('<fieldset><legend>%s</legend><label>Adresse ou identifiant</label>'
+                       '<input name="%s.login" value="%s" autocapitalize="none" autocomplete="off">'
+                       '<label>Mot de passe</label><input name="%s.password" type="password" autocomplete="off"></fieldset>'
+                       % (html.escape(nom), cle, html.escape(catchup.getSetting(cle + '.login'), quote=True), cle)
+                       for nom, cle in COMPTES)
+
+    def enregistrer(saisie):
+        for _, cle in COMPTES:
+            compte = (saisie.get(cle + '.login') or [''])[0].strip()
+            mot_de_passe = (saisie.get(cle + '.password') or [''])[0]
+            if compte != catchup.getSetting(cle + '.login'):
+                catchup.setSetting(cle + '.login', compte)
+                if not compte:
+                    catchup.setSetting(cle + '.password', '')
+            if mot_de_passe:
+                catchup.setSetting(cle + '.password', mot_de_passe)
+        return True, 'Enregistré. Tu peux fermer cette page et appuyer sur Retour sur Kodi.'
+
+    saisie_par_telephone('Identifiants Catch-up TV',
+                         "Ils sont enregistrés sur ton appareil Kodi, nulle part ailleurs. Laisse un mot de passe vide pour garder celui déjà enregistré.",
+                         'Saisis tes identifiants, valide, puis appuie sur Retour ici.', champs, enregistrer)
+
+
+def saisie_par_telephone(titre, consigne, geste, champs, enregistrer):
+    """Affiche une adresse (et son QR code) à ouvrir sur un téléphone du même
+    réseau : une page y présente champs() et remet la saisie à enregistrer(),
+    qui renvoie (réussi, message). Le serveur ne vit que le temps de la
+    fenêtre, et son adresse contient un code tiré au hasard."""
     jeton = '%06d' % random.randrange(10 ** 6)
 
     class Page(BaseHTTPRequestHandler):
@@ -1196,13 +1242,8 @@ def identifiants_par_telephone():
             pass
 
         def repondre(self, message=''):
-            champs = ''
-            for nom, cle in COMPTES:
-                champs += ('<fieldset><legend>%s</legend><label>Adresse ou identifiant</label>'
-                           '<input name="%s.login" value="%s" autocapitalize="none" autocomplete="off">'
-                           '<label>Mot de passe</label><input name="%s.password" type="password" autocomplete="off"></fieldset>'
-                           % (html.escape(nom), cle, html.escape(catchup.getSetting(cle + '.login'), quote=True), cle))
-            corps = (PAGE_TELEPHONE % {'message': message, 'champs': champs}).encode('utf-8')
+            corps = (PAGE_TELEPHONE % {'titre': html.escape(titre), 'consigne': html.escape(consigne),
+                                       'message': message, 'champs': champs()}).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('Content-Length', str(len(corps)))
@@ -1223,16 +1264,8 @@ def identifiants_par_telephone():
             if not self.autorise():
                 return
             saisie = parse_qs(self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode('utf-8'), keep_blank_values=True)
-            for _, cle in COMPTES:
-                compte = (saisie.get(cle + '.login') or [''])[0].strip()
-                mot_de_passe = (saisie.get(cle + '.password') or [''])[0]
-                if compte != catchup.getSetting(cle + '.login'):
-                    catchup.setSetting(cle + '.login', compte)
-                    if not compte:
-                        catchup.setSetting(cle + '.password', '')
-                if mot_de_passe:
-                    catchup.setSetting(cle + '.password', mot_de_passe)
-            self.repondre('<div class="ok">Enregistré. Tu peux fermer cette page et appuyer sur Retour sur Kodi.</div>')
+            reussi, message = enregistrer(saisie)
+            self.repondre('<div class="%s">%s</div>' % ('ok' if reussi else 'non', html.escape(message)))
 
     serveur = None
     for port in range(8765, 8771):
@@ -1259,12 +1292,12 @@ def identifiants_par_telephone():
 
         fenetre = Fenetre()
         fenetre.addControl(xbmcgui.ControlImage(0, 0, 1280, 720, fond))
-        fenetre.addControl(xbmcgui.ControlLabel(90, 150, 600, 50, 'Identifiants Catch-up TV', textColor='0xFFFFFFFF'))
+        fenetre.addControl(xbmcgui.ControlLabel(90, 150, 600, 50, titre, textColor='0xFFFFFFFF'))
         zone = xbmcgui.ControlTextBox(90, 220, 600, 320, textColor='0xFFDDDDDD')
         fenetre.addControl(zone)
         zone.setText("Sur un téléphone connecté au même Wi-Fi, ouvre cette adresse%s :[CR][CR][B]%s[/B][CR][CR]"
-                     "Saisis tes identifiants, valide, puis appuie sur Retour ici."
-                     % (' ou scanne le code' if image_qr(adresse, qr) else '', adresse))
+                     "%s"
+                     % (' ou scanne le code' if image_qr(adresse, qr) else '', adresse, geste))
         if os.path.isfile(qr):
             fenetre.addControl(xbmcgui.ControlImage(780, 160, 400, 400, qr))
         fenetre.doModal()
@@ -1277,6 +1310,111 @@ def identifiants_par_telephone():
                 os.remove(os.path.join(ADDON_DATA, 'script.dark-prophet', fichier))
             except OSError:
                 pass
+
+
+# --- Lumio --------------------------------------------------------------------
+# Lumio (mylumio.tv) est un service à part : chacun y crée son profil, y relie son
+# débrideur et reçoit un lien personnel qu'alkoFlix interroge à la place de ses
+# propres recherches. Ce lien vaut un mot de passe : il ne reste que dans les
+# réglages d'alkoFlix de cet appareil, n'est jamais affiché ni écrit au journal.
+
+def lien_lumio(texte):
+    """Le lien tel qu'alkoFlix l'attend, ou '' si le texte n'a pas la forme d'un lien Lumio."""
+    lien = texte.strip()
+    if lien.startswith('stremio://'):
+        # « Installer dans Stremio » donne cette forme : c'est la même adresse.
+        lien = 'https://' + lien[len('stremio://'):]
+    morceaux = urlparse(lien)
+    if morceaux.scheme not in ('http', 'https') or not morceaux.netloc or len(morceaux.path.strip('/')) < 4 or ' ' in lien:
+        return ''
+    return lien
+
+
+def activer_lumio(alkoflix, lien):
+    alkoflix.setSetting('lumio.manifest_url', lien)
+    alkoflix.setSetting('provider.lumio', 'true')
+
+
+def lumio_par_telephone(alkoflix):
+    def champs():
+        return ('<fieldset><legend>Mon lien Lumio</legend><label>Sur mylumio.tv, ouvre ton profil et copie son lien, puis colle-le ici</label>'
+                '<input name="lien" autocapitalize="none" autocomplete="off" autocorrect="off" spellcheck="false"></fieldset>')
+
+    def enregistrer(saisie):
+        lien = lien_lumio((saisie.get('lien') or [''])[0])
+        if not lien:
+            return False, "Ce n'est pas un lien Lumio : il commence par https:// et se termine en général par manifest.json. Rien n'a été changé."
+        activer_lumio(alkoflix, lien)
+        return True, 'Lien enregistré, Lumio est activé. Tu peux fermer cette page et appuyer sur Retour sur Kodi.'
+
+    saisie_par_telephone('Mon lien Lumio',
+                         "Le lien est enregistré sur ton appareil Kodi, nulle part ailleurs. Ne le donne à personne : il est relié à ton débrideur.",
+                         'Colle ton lien Lumio, valide, puis appuie sur Retour ici.', champs, enregistrer)
+
+
+def lumio():
+    if not installe(ALKOFLIX):
+        dialog.ok(TITRE, "alkoFlix n'est pas installé. Lance d'abord une formule.")
+        return
+    alkoflix = xbmcaddon.Addon(ALKOFLIX)
+
+    def actif():
+        return alkoflix.getSetting('provider.lumio') == 'true' and bool(alkoflix.getSetting('lumio.manifest_url'))
+
+    if not actif() and not dialog.yesno(TITRE, "Lumio ajoute des sources à alkoFlix. Il te faut d'abord, sur [B]mylumio.tv[/B] : un profil, relié à ton débrideur (AllDebrid), avec l'affichage « Détaillé ».[CR]C'est fait ?", nolabel='Pas encore', yeslabel="C'est fait"):
+        return
+    while True:
+        etait_actif = actif()
+        source = alkoflix.getSetting('provider.alkopaste') != 'false'
+        lignes = ['Coller mon lien depuis mon téléphone…', 'Saisir mon lien ici…']
+        if etait_actif:
+            lignes.append('Source alkoPaste : %s' % ('en service (en double avec Lumio)' if source else 'coupée (place libérée)'))
+            lignes.append('Désactiver Lumio')
+        choix = dialog.select('Lumio : %s' % ('activé' if etait_actif else 'pas encore réglé'), lignes)
+        if choix < 0:
+            return
+        if choix == 0:
+            lumio_par_telephone(alkoflix)
+        elif choix == 1:
+            saisie = dialog.input('Mon lien Lumio')
+            if not saisie:
+                continue
+            lien = lien_lumio(saisie)
+            if not lien:
+                dialog.ok(TITRE, "Ce n'est pas un lien Lumio : il commence par https:// et se termine en général par manifest.json.[CR]Rien n'a été changé.")
+                continue
+            activer_lumio(alkoflix, lien)
+        elif choix == 2:
+            regler_source_alkopaste(alkoflix, not source)
+            continue
+        else:
+            if dialog.yesno(TITRE, "Désactiver Lumio et effacer son lien de cet appareil ?[CR]La source alkoPaste est remise en service."):
+                alkoflix.setSetting('provider.lumio', 'false')
+                alkoflix.setSetting('lumio.manifest_url', '')
+                regler_source_alkopaste(alkoflix, True)
+            continue
+        if actif() and not etait_actif:
+            # Lumio rend déjà les liens d'alkoPaste (sa source « LESALKODIQUES ») : la garder
+            # en plus, c'est une base de liens à télécharger et à tenir à jour pour rien.
+            if dialog.yesno(TITRE, "Lumio est activé.[CR]Couper la source alkoPaste d'alkoFlix ? Lumio rend déjà ses liens, et l'appareil n'a plus à garder cette base : conseillé sur un boîtier qui manque de place.[CR]En la gardant, tu as encore des liens si Lumio tombe en panne.", nolabel='La garder', yeslabel='La couper'):
+                regler_source_alkopaste(alkoflix, False)
+
+
+def regler_source_alkopaste(alkoflix, en_service):
+    """La SOURCE alkoPaste (les liens), pas son catalogue, qui reste toujours. Coupée
+    aussi comme source de secours : sinon alkoFlix retélécharge sa base."""
+    alkoflix.setSetting('provider.alkopaste', 'true' if en_service else 'false')
+    if en_service:
+        return
+    alkoflix.setSetting('results.alkopaste_fallback', 'false')
+    # alkoFlix n'efface sa base de liens qu'à son prochain entretien : on libère la
+    # place tout de suite (mêmes fichiers que lui, journaux et téléchargement en cours compris).
+    base = os.path.join(ADDON_DATA, ALKOFLIX, 'alkopaste.db')
+    for suffixe in ('', '-journal', '-wal', '-shm', '.download', '.tmp', '.old'):
+        try:
+            os.remove(base + suffixe)
+        except OSError:
+            pass
 
 
 # --- Nettoyage ----------------------------------------------------------------
@@ -1507,6 +1645,8 @@ def menu():
                 entrees.insert(0, ('Ajouter Catch-up TV à mon installation', ajouter_catchup))
             entrees.insert(0, ("Mettre l'interface à jour", mettre_a_jour))
             entrees.append(("Changer le fond d'écran", changer_fond))
+        if installe(ALKOFLIX):
+            entrees.append(('Lumio (plus de sources pour alkoFlix)', lumio))
         entrees += [
             ('Mes identifiants Catch-up TV', identifiants_catchup),
             ('Nettoyer Kodi', nettoyer),

@@ -41,6 +41,12 @@ Chaque formule demande la version à installer sur le profil alkoFlix :
 - **Base** (`packs/arctic-fuse-3.zip`) : l'interface complète ;
 - **Full** : la Base, plus vStream (dépôt officiel) en rubrique sur l'accueil et en second
   lecteur de TMDb Helper (fichier `vstream.json` des alKODIques).
+  TheIntroDB (dépôt officiel) y ajoute le bouton « Passer l'intro / le résumé / le générique ».
+
+« Lumio » (dans le menu du script, quelle que soit la version) ajoute à alkoFlix les
+sources d'un profil créé sur mylumio.tv : le lien personnel se colle depuis un téléphone
+(même page à QR code que les identifiants) et reste sur l'appareil. Le script propose
+ensuite de couper la source alkoPaste, que Lumio rend déjà, pour libérer de la place.
 
 « Réinitialiser les réglages » défait l'installation : habillage et réglages d'avant,
 plus de profil Catch-up TV ni d'écran de choix. Les extensions restent installées.
