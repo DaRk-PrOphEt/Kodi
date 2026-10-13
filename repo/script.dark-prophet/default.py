@@ -107,6 +107,9 @@ FONDS = (('Rouge', 'alkoflix-rouge.jpg'), ('Bleu', 'alkoflix-bleu.jpg'))
 FICHIER_FOND = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'fond')
 # Pendant une pause de Lumio : l'état de la source alkoPaste à retrouver à sa reprise.
 FICHIER_LUMIO = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'lumio_pause')
+# Lumio en service : Comet n'est plus une source principale, seulement une source de secours.
+SOURCES_AVEC_LUMIO = {'provider.comet': 'false', 'results.comet_fallback': 'true'}
+FICHIER_LUMIO_AVANT = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'lumio_sources_avant.json')
 DOSSIER_FONDS = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet')
 FOND_HABILLAGE = 'special://skin/extras/backgrounds/blur/purple_blur.jpg'   # celui des packs
 FOND_CATCHUP = 'catchup.jpg'   # l'image officielle de Catch-up TV & More, assombrie
@@ -154,10 +157,12 @@ TOUCHES = """<?xml version="1.0" encoding="UTF-8"?>
 </keymap>
 """
 # Réglages posés dans les extensions de confort. YouTube : pas d'assistant de
-# configuration à la première bande-annonce.
+# configuration à la première bande-annonce ; sans MPEG-DASH et en 1080p/720p au plus,
+# les bandes-annonces ne se figent plus au bout de quelques secondes.
 REGLAGES_EXTENSIONS = {
     SAISIE: {'autocomplete_lang': 'fr'},
-    YOUTUBE: {'kodion.setup_wizard': 'false', 'kodion.setup_wizard.forced_runs': '2147483647'},
+    YOUTUBE: {'kodion.setup_wizard': 'false', 'kodion.setup_wizard.forced_runs': '2147483647',
+              'kodion.mpd.videos': 'false', 'kodion.video.quality': '4'},
     # L'épisode suivant s'enchaîne aussi dans une liste de lecture et sur une série déjà vue.
     UPNEXT: {'enablePlaylist': 'true', 'includeWatched': 'true'},
     # Conseil des auteurs d'alkoFlix : sans ce réglage, la lecture lancée depuis une fiche
@@ -1347,6 +1352,25 @@ def regler_lumio(alkoflix, en_service):
     cherche d'abord dans ses propres sources et Lumio ne sert presque jamais."""
     alkoflix.setSetting('provider.lumio', 'true' if en_service else 'false')
     alkoflix.setSetting('sources.alkoflix_mode', '1' if en_service else '0')
+    # Conseil des auteurs d'alkoFlix : avec Lumio, les autres sources ne servent plus qu'en
+    # secours. Les valeurs d'avant sont retenues, pour les remettre quand Lumio s'éteint.
+    try:
+        if en_service:
+            if not os.path.isfile(FICHIER_LUMIO_AVANT):
+                os.makedirs(os.path.dirname(FICHIER_LUMIO_AVANT), exist_ok=True)
+                with open(FICHIER_LUMIO_AVANT, 'w') as sortie:
+                    json.dump({cle: alkoflix.getSetting(cle) for cle in SOURCES_AVEC_LUMIO}, sortie)
+            for cle, valeur in SOURCES_AVEC_LUMIO.items():
+                alkoflix.setSetting(cle, valeur)
+        elif os.path.isfile(FICHIER_LUMIO_AVANT):
+            with open(FICHIER_LUMIO_AVANT) as source:
+                avant = json.load(source)
+            for cle in SOURCES_AVEC_LUMIO:
+                if avant.get(cle) in ('true', 'false'):
+                    alkoflix.setSetting(cle, avant[cle])
+            os.remove(FICHIER_LUMIO_AVANT)
+    except (OSError, ValueError) as erreur:
+        log('sources avec Lumio : %r' % erreur)
 
 
 def activer_lumio(alkoflix, lien):
