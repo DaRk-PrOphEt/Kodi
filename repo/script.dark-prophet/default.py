@@ -1589,10 +1589,15 @@ def surveiller_listes():
     def etat():
         return [os.path.getmtime(fichier) if os.path.exists(fichier) else 0 for fichier in TEMOINS_LISTES]
 
+    # Aucune question à l'interface dans cette boucle (getCondVisibility…) : pendant un
+    # changement de profil, Kodi la verrouille le temps d'arrêter les services, et un
+    # service qui l'interroge à ce moment-là reste bloqué jusqu'à ce que Kodi le coupe,
+    # 5 secondes plus tard. Le lecteur se demande sans passer par l'interface.
     moniteur = xbmc.Monitor()
+    lecteur = xbmc.Player()
     vu = etat()
     while not moniteur.waitForAbort(3):
-        if xbmc.getCondVisibility('Player.HasMedia'):
+        if lecteur.isPlaying():
             continue   # pendant un film, alkoFlix note l'avancement sans arrêt : on attend la fin
         maintenant = etat()
         if maintenant != vu:
