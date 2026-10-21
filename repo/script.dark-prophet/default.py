@@ -177,7 +177,11 @@ REGLAGES_EXTENSIONS = {
     INTRO: {'anonymous_usage_reporting': 'false'},
     # « Info & Extra » ouvre la fenêtre d'information d'Arctic Fuse 3 (la même que la touche
     # Info) au lieu de celle d'alkoFlix : même allure partout, et les notes par épisode.
-    ALKOFLIX: {'info_extra.window': 'false'},
+    # Recherche de liens plus courte, repris des réglages officiels d'alkoFlix sans toucher
+    # à la qualité (la 4K reste proposée) : on n'attend plus la source la plus lente, et
+    # moins de liens à trier = un écran de liens qui s'affiche plus vite.
+    ALKOFLIX: {'info_extra.window': 'false', 'search.finish.early': 'true',
+               'results.max_total': '15', 'results.max_per_resolution': '6'},
 }
 
 # Là où Catch-up TV et alkoFlix rangent les favoris, la liste à voir et les
