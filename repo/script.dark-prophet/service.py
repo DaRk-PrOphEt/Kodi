@@ -8,4 +8,5 @@ import default
 default.lever_verrou_profils()
 default.poser_images_habillage(telecharger=False)
 default.oublier_jeton()
+default.retirer_lumio()
 default.surveiller_listes()

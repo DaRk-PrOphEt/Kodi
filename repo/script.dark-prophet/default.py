@@ -15,7 +15,7 @@ import zipfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from io import BytesIO
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote
 from urllib.request import urlopen
 from xml.etree import ElementTree
 
@@ -105,11 +105,11 @@ FICHIER_INTERFACE = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'i
 # Fonds d'écran proposés pour le profil alkoFlix (une image fixe : aucun effet sur la fluidité).
 FONDS = (('Rouge', 'alkoflix-rouge.jpg'), ('Bleu', 'alkoflix-bleu.jpg'))
 FICHIER_FOND = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'fond')
-# Pendant une pause de Lumio : l'état de la source alkoPaste à retrouver à sa reprise.
+# Lumio (source externe d'alkoFlix) a été proposé de la 1.16.0 à la 1.16.4, puis retiré :
+# ses fichiers, et le témoin qui évite de refaire le ménage (voir retirer_lumio).
 FICHIER_LUMIO = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'lumio_pause')
-# Lumio en service : Comet n'est plus une source principale, seulement une source de secours.
-SOURCES_AVEC_LUMIO = {'provider.comet': 'false', 'results.comet_fallback': 'true'}
 FICHIER_LUMIO_AVANT = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'lumio_sources_avant.json')
+FICHIER_LUMIO_RETIRE = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet', 'lumio_retire')
 DOSSIER_FONDS = os.path.join(MAITRE, 'addon_data', 'script.dark-prophet')
 FOND_HABILLAGE = 'special://skin/extras/backgrounds/blur/purple_blur.jpg'   # celui des packs
 FOND_CATCHUP = 'catchup.jpg'   # l'image officielle de Catch-up TV & More, assombrie
@@ -1330,156 +1330,32 @@ def saisie_par_telephone(titre, consigne, geste, champs, enregistrer):
                 pass
 
 
-# --- Lumio --------------------------------------------------------------------
-# Lumio (mylumio.tv) est un service à part : chacun y crée son profil, y relie son
-# débrideur et reçoit un lien personnel qu'alkoFlix interroge à la place de ses
-# propres recherches. Ce lien vaut un mot de passe : il ne reste que dans les
-# réglages d'alkoFlix de cet appareil, n'est jamais affiché ni écrit au journal.
-
-def lien_lumio(texte):
-    """Le lien tel qu'alkoFlix l'attend, ou '' si le texte n'a pas la forme d'un lien Lumio."""
-    lien = texte.strip()
-    if lien.startswith('stremio://'):
-        # « Installer dans Stremio » donne cette forme : c'est la même adresse.
-        lien = 'https://' + lien[len('stremio://'):]
-    morceaux = urlparse(lien)
-    if morceaux.scheme not in ('http', 'https') or not morceaux.netloc or len(morceaux.path.strip('/')) < 4 or ' ' in lien:
-        return ''
-    return lien
-
-
-def regler_lumio(alkoflix, en_service):
-    """Allume ou éteint Lumio sans toucher au lien. Allumé, le « mode alkoFlix » passe
-    « En secours » : Lumio est interrogé en premier et les sources d'alkoFlix ne servent
-    que s'il ne rend pas assez de liens. Resté « Par défaut », c'est l'inverse : alkoFlix
-    cherche d'abord dans ses propres sources et Lumio ne sert presque jamais."""
-    alkoflix.setSetting('provider.lumio', 'true' if en_service else 'false')
-    alkoflix.setSetting('sources.alkoflix_mode', '1' if en_service else '0')
-    # Conseil des auteurs d'alkoFlix : avec Lumio, les autres sources ne servent plus qu'en
-    # secours. Les valeurs d'avant sont retenues, pour les remettre quand Lumio s'éteint.
+# --- Lumio (retiré) ----------------------------------------------------------
+def retirer_lumio():
+    """Défait une seule fois ce que l'entrée « Lumio » des versions 1.16 avait réglé
+    dans alkoFlix : Lumio éteint et son lien effacé (il valait un mot de passe), mode
+    de recherche par défaut, Comet et la source alkoPaste remis en service. Le témoin
+    évite d'y revenir : un Lumio réglé plus tard à la main dans alkoFlix reste intact."""
+    # Lumio ne se réglait que dans le profil principal (alkoFlix).
+    if os.path.isfile(FICHIER_LUMIO_RETIRE) or not dans_le_profil_principal() or not installe(ALKOFLIX):
+        return
     try:
-        if en_service:
-            if not os.path.isfile(FICHIER_LUMIO_AVANT):
-                os.makedirs(os.path.dirname(FICHIER_LUMIO_AVANT), exist_ok=True)
-                with open(FICHIER_LUMIO_AVANT, 'w') as sortie:
-                    json.dump({cle: alkoflix.getSetting(cle) for cle in SOURCES_AVEC_LUMIO}, sortie)
-            for cle, valeur in SOURCES_AVEC_LUMIO.items():
-                alkoflix.setSetting(cle, valeur)
-        elif os.path.isfile(FICHIER_LUMIO_AVANT):
-            with open(FICHIER_LUMIO_AVANT) as source:
-                avant = json.load(source)
-            for cle in SOURCES_AVEC_LUMIO:
-                if avant.get(cle) in ('true', 'false'):
-                    alkoflix.setSetting(cle, avant[cle])
-            os.remove(FICHIER_LUMIO_AVANT)
-    except (OSError, ValueError) as erreur:
-        log('sources avec Lumio : %r' % erreur)
-
-
-def activer_lumio(alkoflix, lien):
-    alkoflix.setSetting('lumio.manifest_url', lien)
-    regler_lumio(alkoflix, True)
-
-
-def lumio_par_telephone(alkoflix):
-    def champs():
-        return ('<fieldset><legend>Mon lien Lumio</legend><label>Sur mylumio.tv, ouvre ton profil et copie son lien, puis colle-le ici</label>'
-                '<input name="lien" autocapitalize="none" autocomplete="off" autocorrect="off" spellcheck="false"></fieldset>')
-
-    def enregistrer(saisie):
-        lien = lien_lumio((saisie.get('lien') or [''])[0])
-        if not lien:
-            return False, "Ce n'est pas un lien Lumio : il commence par https:// et se termine en général par manifest.json. Rien n'a été changé."
-        activer_lumio(alkoflix, lien)
-        return True, 'Lien enregistré, Lumio est activé. Tu peux fermer cette page et appuyer sur Retour sur Kodi.'
-
-    saisie_par_telephone('Mon lien Lumio',
-                         "Le lien est enregistré sur ton appareil Kodi, nulle part ailleurs. Ne le donne à personne : il est relié à ton débrideur.",
-                         'Colle ton lien Lumio, valide, puis appuie sur Retour ici.', champs, enregistrer)
-
-
-def lumio():
-    if not installe(ALKOFLIX):
-        dialog.ok(TITRE, "alkoFlix n'est pas installé. Lance d'abord une formule.")
-        return
-    alkoflix = xbmcaddon.Addon(ALKOFLIX)
-
-    def lien():
-        return alkoflix.getSetting('lumio.manifest_url')
-
-    def actif():
-        return alkoflix.getSetting('provider.lumio') == 'true' and bool(lien())
-
-    def coller():
-        lumio_par_telephone(alkoflix)
-
-    def saisir_ici():
-        saisie = dialog.input('Mon lien Lumio')
-        if not saisie:
-            return
-        if not lien_lumio(saisie):
-            dialog.ok(TITRE, "Ce n'est pas un lien Lumio : il commence par https:// et se termine en général par manifest.json.[CR]Rien n'a été changé.")
-            return
-        activer_lumio(alkoflix, lien_lumio(saisie))
-
-    def mettre_en_pause():
-        # Lumio en panne ou capricieux : on repasse sur alkoPaste sans rien effacer, et on
-        # retient si sa source était coupée pour la recouper au retour de Lumio.
-        coupee = alkoflix.getSetting('provider.alkopaste') == 'false'
-        regler_lumio(alkoflix, False)
-        regler_source_alkopaste(alkoflix, True)
-        os.makedirs(os.path.dirname(FICHIER_LUMIO), exist_ok=True)
-        with open(FICHIER_LUMIO, 'w') as sortie:
-            sortie.write('coupee' if coupee else 'gardee')
-
-    def reprendre():
-        regler_lumio(alkoflix, True)
-        if os.path.isfile(FICHIER_LUMIO):
-            if open(FICHIER_LUMIO).read().strip() == 'coupee':
-                regler_source_alkopaste(alkoflix, False)
-            os.remove(FICHIER_LUMIO)
-
-    def effacer():
-        if dialog.yesno(TITRE, "Effacer ton lien Lumio de cet appareil ?[CR]La source alkoPaste est remise en service. Pour revenir à Lumio, il faudra recoller le lien."):
-            regler_lumio(alkoflix, False)
+        alkoflix = xbmcaddon.Addon(ALKOFLIX)
+        if alkoflix.getSetting('provider.lumio') == 'true' or alkoflix.getSetting('lumio.manifest_url'):
+            alkoflix.setSetting('provider.lumio', 'false')
             alkoflix.setSetting('lumio.manifest_url', '')
+            alkoflix.setSetting('sources.alkoflix_mode', '0')
+            alkoflix.setSetting('provider.comet', 'true')
+            alkoflix.setSetting('results.comet_fallback', 'true')
             regler_source_alkopaste(alkoflix, True)
-            if os.path.isfile(FICHIER_LUMIO):
-                os.remove(FICHIER_LUMIO)
-
-    if actif():
-        regler_lumio(alkoflix, True)   # activé avec une version d'avant la 1.16.2 : le mode n'était pas posé
-    if not lien() and not dialog.yesno(TITRE, "Lumio ajoute des sources à alkoFlix. Il te faut d'abord, sur [B]mylumio.tv[/B] : un profil, relié à ton débrideur (AllDebrid), avec l'affichage « Détaillé ».[CR]C'est fait ?", nolabel='Pas encore', yeslabel="C'est fait"):
-        return
-    while True:
-        etait_actif = actif()
-        source = alkoflix.getSetting('provider.alkopaste') != 'false'
-        if etait_actif:
-            titre = 'Lumio : activé'
-            entrees = [('Mettre Lumio en pause (repasser sur alkoPaste)', mettre_en_pause),
-                       ('Source alkoPaste : %s' % ('en service (en double avec Lumio)' if source else 'coupée (place libérée)'),
-                        lambda: regler_source_alkopaste(alkoflix, not source)),
-                       ('Changer mon lien depuis mon téléphone…', coller), ('Saisir mon lien ici…', saisir_ici),
-                       ('Effacer mon lien Lumio', effacer)]
-        elif lien():
-            titre = 'Lumio : en pause, alkoPaste en service'
-            entrees = [('Réactiver Lumio', reprendre),
-                       ('Changer mon lien depuis mon téléphone…', coller), ('Saisir mon lien ici…', saisir_ici),
-                       ('Effacer mon lien Lumio', effacer)]
-        else:
-            titre = 'Lumio : pas encore réglé'
-            entrees = [('Coller mon lien depuis mon téléphone…', coller), ('Saisir mon lien ici…', saisir_ici)]
-        choix = dialog.select(titre, [libelle for libelle, _ in entrees])
-        if choix < 0:
-            return
-        entrees[choix][1]()
-        if actif() and not etait_actif and entrees[choix][1] in (coller, saisir_ici):
-            if os.path.isfile(FICHIER_LUMIO):
-                os.remove(FICHIER_LUMIO)   # un lien recollé pendant une pause : on repart de zéro
-            # Lumio rend déjà les liens d'alkoPaste (sa source « LESALKODIQUES ») : la garder
-            # en plus, c'est une base de liens à télécharger et à tenir à jour pour rien.
-            if dialog.yesno(TITRE, "Lumio est activé.[CR]Couper la source alkoPaste d'alkoFlix ? Lumio rend déjà ses liens, et l'appareil n'a plus à garder cette base : conseillé sur un boîtier qui manque de place.[CR]En la gardant, tu as encore des liens si Lumio tombe en panne.", nolabel='La garder', yeslabel='La couper'):
-                regler_source_alkopaste(alkoflix, False)
+            log('Lumio retiré, alkoFlix remis sur ses propres sources')
+        for fichier in (FICHIER_LUMIO, FICHIER_LUMIO_AVANT):
+            if os.path.isfile(fichier):
+                os.remove(fichier)
+        os.makedirs(os.path.dirname(FICHIER_LUMIO_RETIRE), exist_ok=True)
+        open(FICHIER_LUMIO_RETIRE, 'w').close()
+    except (OSError, RuntimeError) as erreur:
+        log('retrait de Lumio : %r' % erreur)
 
 
 def regler_source_alkopaste(alkoflix, en_service):
@@ -1669,7 +1545,14 @@ def rechercher(genre='', sections=''):
     if not mot:
         return
     cle = xbmcaddon.Addon(ALKOFLIX).getSetting('tmdb_api')
-    tmdb = 'https://api.themoviedb.org/3/search/%s?api_key=' + cle + '&language=fr-FR&page=%%s&query=' + quote(mot)
+
+    def tmdb(genre_tmdb):
+        # alkoFlix pose le numéro de page avec « adresse % page » : les % du mot
+        # tapé (espaces, accents encodés) doivent être doublés, sinon plus d'un mot
+        # suffit à faire planter la recherche.
+        return ('https://api.themoviedb.org/3/search/' + genre_tmdb + '?api_key=' + cle
+                + '&language=fr-FR&page=%s&query=' + quote(mot).replace('%', '%%'))
+
     nom = quote('Recherche : ' + mot)
     if genre in titres:
         mode, action = (('build_movie_list', 'tmdb_movies_discover') if genre == 'movie'
@@ -1677,10 +1560,10 @@ def rechercher(genre='', sections=''):
         chemin = 'plugin://%s/?mode=%s&action=%s&catalogue_only=true&name=%s' % (ALKOFLIX, mode, action, nom)
         if sections:
             chemin += '&because_you_watched=true&recommendation_group=all&recommendation_catalogue_section=' + quote(sections)
-        chemin += '&query=' + quote(tmdb % genre, safe='')
+        chemin += '&query=' + quote(tmdb(genre), safe='')
     else:
         chemin = ('plugin://%s/?mode=discover.combined_results&movie_query=%s&tv_query=%s&name=%s&catalogue_only=true'
-                  % (ALKOFLIX, quote(tmdb % 'movie', safe=''), quote(tmdb % 'tv', safe=''), nom))
+                  % (ALKOFLIX, quote(tmdb('movie'), safe=''), quote(tmdb('tv'), safe=''), nom))
     xbmc.executebuiltin('ActivateWindow(Videos,"%s",return)' % chemin)
 
 
@@ -1716,6 +1599,7 @@ def surveiller_listes():
 def menu():
     lever_verrou_profils()
     oublier_jeton()
+    retirer_lumio()
     if dans_le_profil_principal():
         entrees = [
             ('Formule alkoFlix', formule_alkoflix),
@@ -1727,8 +1611,6 @@ def menu():
                 entrees.insert(0, ('Ajouter Catch-up TV à mon installation', ajouter_catchup))
             entrees.insert(0, ("Mettre l'interface à jour", mettre_a_jour))
             entrees.append(("Changer le fond d'écran", changer_fond))
-        if installe(ALKOFLIX):
-            entrees.append(('Lumio (plus de sources pour alkoFlix)', lumio))
         entrees += [
             ('Mes identifiants Catch-up TV', identifiants_catchup),
             ('Nettoyer Kodi', nettoyer),
