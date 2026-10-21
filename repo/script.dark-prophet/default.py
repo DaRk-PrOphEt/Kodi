@@ -47,6 +47,10 @@ UPNEXT = 'service.upnext'
 # Version « Full » seulement : un bouton « Passer l'intro / le résumé / le générique »
 # pendant la lecture, quand l'épisode est connu de la base communautaire TheIntroDB.
 INTRO = 'plugin.video.tidb'
+# Version « Full » seulement : vStream s'en sert pour joindre les sites que les fournisseurs
+# d'accès bloquent par DNS (recherches vides sinon). Publié en zip sur la page de vStream,
+# hors de tout dépôt : notre dépôt le sert tel quel.
+DNS = 'script.module.dnspython'
 TMDBHELPER = 'plugin.video.themoviedb.helper'
 LECTEUR = 'alkoflix.select.json'
 ICONE_SCRIPT = 'screwdriver-wrench.png'   # icône d'Arctic Fuse 3 pour le raccourci du menu Options
@@ -59,11 +63,12 @@ NOMS = {SKIN: 'Arctic Fuse 3', ALKOFLIX: 'alkoFlix', CATCHUP: 'Catch-up TV & Mor
 DEPOTS = {SKIN: 'repository.jurialmunkey', ALKOFLIX: 'repository.alkoflix', CATCHUP: 'catchuptvandmore.kodi.release',
           VSTREAM: 'repository.vstream', INTRO: 'repository.tidb.repo'}
 NOMS.update({VSTREAM: 'vStream', 'repository.vstream': 'le dépôt de vStream'})
+NOMS.update({DNS: 'DNS Python (sites bloqués par le fournisseur)'})
 NOMS.update({INTRO: "TheIntroDB (passer l'intro)", 'repository.tidb.repo': 'le dépôt de TheIntroDB'})
 NOMS.update({'repository.jurialmunkey': "le dépôt d'Arctic Fuse 3", 'repository.alkoflix': "le dépôt d'alkoFlix",
              'catchuptvandmore.kodi.release': 'le dépôt de Catch-up TV'})
 # Le confort : si l'un d'eux ne s'installe pas, la formule continue quand même.
-FACULTATIFS = (LANGUE, SONS, ICONES, SAISIE, FLUX, YOUTUBE, UPNEXT, INTRO, 'repository.tidb.repo')
+FACULTATIFS = (LANGUE, SONS, ICONES, SAISIE, FLUX, YOUTUBE, UPNEXT, INTRO, DNS, 'repository.tidb.repo')
 
 PACKS_URL = 'https://raw.githubusercontent.com/DaRk-PrOphEt/Kodi/main/packs/'
 PACK_ALKOFLIX = 'arctic-fuse-3.zip'
@@ -997,7 +1002,7 @@ def formule_alkoflix():
     if not version:
         return
     noter_etat_avant()
-    if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES) + ((VSTREAM, INTRO) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):
+    if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES) + ((VSTREAM, DNS, INTRO) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):
         return
     franciser()
     regler_confort()
@@ -1020,7 +1025,7 @@ def formule_catchup():
     if not version:
         return
     noter_etat_avant()
-    if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES, CATCHUP) + ((VSTREAM, INTRO) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):
+    if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES, CATCHUP) + ((VSTREAM, DNS, INTRO) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):
         return
     franciser()
     regler_confort()
@@ -1046,7 +1051,7 @@ def mettre_a_jour():
     version = choisir_version()
     if not version:
         return
-    if not installer_tout((LANGUE, SONS, SAISIE, ICONES) + ((VSTREAM, INTRO) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):
+    if not installer_tout((LANGUE, SONS, SAISIE, ICONES) + ((VSTREAM, DNS, INTRO) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):
         return
     franciser()
     regler_confort(dossier_du_profil(PROFIL_CATCHUP) if PROFIL_CATCHUP in profils() else None)

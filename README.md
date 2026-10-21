@@ -42,6 +42,7 @@ Chaque formule demande la version à installer sur le profil alkoFlix :
 - **Full** : la Base, plus vStream (dépôt officiel) en rubrique sur l'accueil et en second
   lecteur de TMDb Helper (fichier `vstream.json` des alKODIques).
   TheIntroDB (dépôt officiel) y ajoute le bouton « Passer l'intro / le résumé / le générique ».
+  DNS Python (zip publié par vStream, servi par ce dépôt) aide vStream à joindre les sites bloqués par le fournisseur d'accès.
 
 Le menu Options d'Arctic Fuse 3 porte un raccourci « DaRk-PrOphEt » vers le script, dans les deux profils.
 
