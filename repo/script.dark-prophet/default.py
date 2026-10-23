@@ -566,7 +566,7 @@ def ajuster_menu_options(avec_catchup=None, racine=None):
             entrees = [e for e in json.load(source) if e.get('guid') not in GUIDS_MENU_OPTIONS]
         # Juste avant « Quitter », qui reste en dernier.
         for entree in (
-                {'icon': 'special://skin/extras/icons/addons.png', 'label': 'Extensions',
+                {'icon': 'special://skin/extras/icons/puzzle-piece.png', 'label': 'Extensions',
                  'path': 'ActivateWindow(addonbrowser)', 'target': '', 'guid': 'guid-dpextensions'},
                 {'icon': 'special://skin/extras/icons/%s' % ICONE_SCRIPT, 'label': TITRE,
                  'path': 'RunScript(script.dark-prophet)', 'target': '', 'guid': 'guid-dpscript'}):
