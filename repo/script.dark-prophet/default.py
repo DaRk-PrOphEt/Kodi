@@ -53,6 +53,7 @@ INTRO = 'plugin.video.tidb'
 DNS = 'script.module.dnspython'
 TMDBHELPER = 'plugin.video.themoviedb.helper'
 LECTEUR = 'alkoflix.select.json'
+GUIDS_MENU_OPTIONS = ('guid-022adae1', 'guid-549c9ded', 'guid-dpscript', 'guid-dpextensions', 'guid-dpcatchup', 'guid-dpalkoflix')   # Favoris, Gestionnaire des fichiers et nos anciennes lignes
 ICONE_SCRIPT = 'screwdriver-wrench.png'   # icône d'Arctic Fuse 3 pour le raccourci du menu Options
 NOMS = {SKIN: 'Arctic Fuse 3', ALKOFLIX: 'alkoFlix', CATCHUP: 'Catch-up TV & More',
         LANGUE: 'la langue française', SONS: 'les sons Android TV', ICONES: "les icônes d'alkoFlix",
@@ -552,28 +553,42 @@ def appliquer_ici(archive, fond=None, bouton_catchup=None, vstream=None):
 
 
 def ajuster_menu_options(avec_catchup=None, racine=None):
-    """Menu Options d'Arctic Fuse 3 : un raccourci vers ce script, et (profil
-    alkoFlix, avec_catchup True ou False) un bouton pour passer au profil
-    Catch-up TV seulement s'il existe. Le pack Catch-up TV porte déjà le bouton
-    du retour vers alkoFlix. racine : addon_data d'un profil fermé."""
+    """Menu Options d'Arctic Fuse 3 : la tuile CPU/RAM devient le passage vers
+    l'autre profil (Catch-up TV depuis alkoFlix, seulement s'il existe ;
+    alkoFlix depuis Catch-up TV, d'où racine, l'addon_data du profil fermé), la
+    liste perd « Favoris » et « Gestionnaire des fichiers » et gagne « Extensions »
+    et un raccourci vers ce script. avec_catchup None : on ne touche pas au
+    passage entre profils."""
     fichier = os.path.join(racine or ADDON_DATA, 'script.skinvariables', 'nodes', SKIN, 'skinvariables-shortcut-powermenu.json')
+    vers = (PROFIL_ALKOFLIX, 'film.png') if racine else (PROFIL_CATCHUP, 'livetv.png') if avec_catchup else None
     try:
         with open(fichier, encoding='utf-8') as source:
-            entrees = [e for e in json.load(source) if e.get('guid') != 'guid-dpscript']
-        if avec_catchup is not None:
-            entrees = [e for e in entrees if not str(e.get('path', '')).startswith('LoadProfile(')]
+            entrees = [e for e in json.load(source) if e.get('guid') not in GUIDS_MENU_OPTIONS]
         # Juste avant « Quitter », qui reste en dernier.
-        if avec_catchup:
-            entrees.insert(max(len(entrees) - 1, 0), {
-                'icon': 'special://skin/extras/icons/livetv.png', 'label': PROFIL_CATCHUP,
-                'path': 'LoadProfile(%s)' % PROFIL_CATCHUP, 'target': '', 'guid': 'guid-dpcatchup'})
-        entrees.insert(max(len(entrees) - 1, 0), {
-            'icon': 'special://skin/extras/icons/%s' % ICONE_SCRIPT, 'label': TITRE,
-            'path': 'RunScript(script.dark-prophet)', 'target': '', 'guid': 'guid-dpscript'})
+        for entree in (
+                {'icon': 'special://skin/extras/icons/addons.png', 'label': 'Extensions',
+                 'path': 'ActivateWindow(addonbrowser)', 'target': '', 'guid': 'guid-dpextensions'},
+                {'icon': 'special://skin/extras/icons/%s' % ICONE_SCRIPT, 'label': TITRE,
+                 'path': 'RunScript(script.dark-prophet)', 'target': '', 'guid': 'guid-dpscript'}):
+            entrees.insert(max(len(entrees) - 1, 0), entree)
         with open(fichier, 'w', encoding='utf-8') as sortie:
             json.dump(entrees, sortie, indent=4, ensure_ascii=False)
     except (OSError, ValueError) as erreur:
         log('menu Options : %r' % erreur)
+        return
+    if vers:
+        poser_tuile_options(vers[0], 'LoadProfile(%s)' % vers[0], 'special://skin/extras/icons/%s' % vers[1], racine)
+    elif avec_catchup is not None:
+        poser_tuile_options(None, None, None, racine)
+
+
+def poser_tuile_options(label, action, icone, racine=None):
+    """Troisième tuile du menu Options : un bouton à notre nom, ou, sans label,
+    la tuile CPU/RAM d'origine."""
+    reglages = {'optionstiles.03.include': 'Custom' if label else 'SystemInfo', 'optionstiles.03.label': label or '',
+                'optionstiles.03.path': action or '', 'optionstiles.03.icon': icone or ''}
+    for nom, valeur in reglages.items():
+        poser_reglage_habillage(nom, valeur, racine)
 
 
 def ajuster_rubriques_vstream(avec):
@@ -677,14 +692,20 @@ def changer_fond():
 
 def poser_fond(image, racine=None):
     """Inscrit le fond dans les réglages de l'habillage d'un profil, pendant qu'il n'y est pas actif."""
+    poser_reglage_habillage('background.image', image, racine)
+
+
+def poser_reglage_habillage(nom, valeur, racine=None):
+    """Pose un réglage texte de l'habillage dans le profil dont l'addon_data est
+    `racine` (le profil ouvert par défaut), pendant qu'il n'y est pas actif."""
     fichier = os.path.join(racine or ADDON_DATA, SKIN, 'settings.xml')
     if not os.path.isfile(fichier):
         return
     with open(fichier, encoding='utf-8') as source:
         xml = source.read()
-    ligne = '<setting id="background.image" type="string">%s</setting>' % image.replace('&', '&amp;')
-    motif = re.compile(r'<setting id="background\.image" type="string">.*?</setting>|<setting id="background\.image" type="string" */>', re.I | re.S)
-    xml = motif.sub(lambda m: ligne, xml, count=1) if motif.search(xml) else xml.replace('</settings>', '    %s\n</settings>' % ligne)
+    ligne = '<setting id="%s" type="string">%s</setting>' % (nom, valeur.replace('&', '&amp;'))
+    motif = re.compile(r'<setting id="%s" type="string">.*?</setting>|<setting id="%s" type="string" */>' % ((re.escape(nom),) * 2), re.I | re.S)
+    xml = motif.sub(lambda m: ligne, xml) if motif.search(xml) else xml.replace('</settings>', '    %s\n</settings>' % ligne)
     with open(fichier, 'w', encoding='utf-8') as sortie:
         sortie.write(xml)
 

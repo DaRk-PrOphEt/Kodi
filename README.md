@@ -25,8 +25,8 @@ interface publiée sur chaque profil, sans rien réinstaller.
 Les formules relient aussi alkoFlix à TMDb Helper (lecteurs fournis par alkoFlix, pris par
 défaut), pour que la recherche et les fiches d'Arctic Fuse 3 lancent bien alkoFlix. Elles
 proposent un fond d'écran (`packs/fonds/`), donnent à chaque profil le logo de son
-extension sur l'écran de choix, et ajoutent au menu Options un bouton pour passer d'un
-profil à l'autre.
+extension sur l'écran de choix, et mettent dans le menu Options une tuile pour passer d'un
+profil à l'autre (à la place de la tuile CPU/RAM).
 
 Les identifiants de replay (TF1+, M6+…) se saisissent depuis le menu du script, dans
 le profil Catch-up TV, à la télécommande ou depuis un téléphone du même réseau (le
@@ -44,7 +44,7 @@ Chaque formule demande la version à installer sur le profil alkoFlix :
   TheIntroDB (dépôt officiel) y ajoute le bouton « Passer l'intro / le résumé / le générique ».
   DNS Python (zip publié par vStream, servi par ce dépôt) aide vStream à joindre les sites bloqués par le fournisseur d'accès.
 
-Le menu Options d'Arctic Fuse 3 porte un raccourci « DaRk-PrOphEt » vers le script, dans les deux profils.
+Le menu Options d'Arctic Fuse 3 porte des raccourcis « Extensions » et « DaRk-PrOphEt » (le script), dans les deux profils ; « Favoris » et « Gestionnaire des fichiers » en sont retirés.
 
 « Réinitialiser les réglages » défait l'installation : habillage et réglages d'avant,
 plus de profil Catch-up TV ni d'écran de choix. Les extensions restent installées.
