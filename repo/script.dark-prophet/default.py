@@ -612,6 +612,27 @@ def ajuster_rubriques_vstream(avec):
         log('rubriques vStream : %r' % erreur)
 
 
+def couper_doublons_vstream():
+    """vStream cherche dans toutes ses sources actives et range les résultats
+    source par source : une source qui en copie une autre (« French-stream
+    (Clone) ») ne fait que doubler les lignes de la liste. On la désactive ; le
+    fichier de l'utilisateur est créé à partir de celui de l'extension s'il
+    n'existe pas encore."""
+    cible = os.path.join(ADDON_DATA, VSTREAM, 'sites.json')
+    modele = xbmcvfs.translatePath('special://home/addons/%s/resources/sites.json' % VSTREAM)
+    try:
+        with open(cible if os.path.isfile(cible) else modele, encoding='utf-8') as source:
+            sites = json.load(source)
+        if sites['sites']['french_stream_clone'].get('active') == 'False':
+            return
+        sites['sites']['french_stream_clone']['active'] = 'False'
+        os.makedirs(os.path.dirname(cible), exist_ok=True)
+        with open(cible, 'w', encoding='utf-8') as sortie:
+            json.dump(sites, sortie, indent=4)    # ASCII pur : vStream relit le fichier sans préciser l'encodage
+    except (OSError, ValueError, KeyError) as erreur:
+        log('doublons vStream : %r' % erreur)
+
+
 def relier_vstream(avec):
     """En version Full, vStream devient un second lecteur de TMDb Helper : sur
     une fiche, un appui long propose « Lire avec… ». alkoFlix reste le
@@ -619,6 +640,7 @@ def relier_vstream(avec):
     cible = os.path.join(ADDON_DATA, TMDBHELPER, 'players', 'vstream.json')
     try:
         if avec:
+            couper_doublons_vstream()
             os.makedirs(os.path.dirname(cible), exist_ok=True)
             shutil.copy(xbmcvfs.translatePath('special://home/addons/script.dark-prophet/resources/players/vstream.json'), cible)
         elif os.path.isfile(cible):
