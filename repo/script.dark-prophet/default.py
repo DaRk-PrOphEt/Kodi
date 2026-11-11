@@ -10,6 +10,7 @@ import sqlite3
 import struct
 import sys
 import threading
+import time
 import zlib
 import zipfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -26,6 +27,7 @@ import xbmcvfs
 
 TITRE = 'DaRk-PrOphEt'
 SKIN = 'skin.arctic.fuse.3'
+SKIN_ESTUARY = 'skin.estuary'   # habillage d'origine de Kodi : version Extra-Light
 SKIN_SECOURS = 'skin.estuary'
 ALKOFLIX = 'plugin.video.alkoflix'
 CATCHUP = 'plugin.video.catchuptvandmore'
@@ -452,25 +454,29 @@ def telecharger_pack(nom, muet=False):
     return None
 
 
-VERSIONS = (('leger', 'Allégée : pour les boîtiers modestes'),
+VERSIONS = (('extra', "Extra-Light : habillage d'origine de Kodi, le plus léger"),
+            ('leger', 'Allégée : pour les boîtiers modestes'),
             ('complet', 'Base : interface complète'),
             ('full', "Full : Base + vStream + bouton « Passer l'intro »"))
 
 
-def choisir_version(redemander=True):
-    """Version à installer sur le profil alkoFlix : « leger », « complet » (la
-    Base) ou « full ». Le choix est retenu : avec redemander=False, on le
-    reprend sans reposer la question ; sinon la question part du choix retenu."""
+def choisir_version(redemander=True, avec_extra=True):
+    """Version à installer sur le profil alkoFlix : « extra » (Estuary), « leger »,
+    « complet » (la Base) ou « full ». Le choix est retenu : avec redemander=False,
+    on le reprend sans reposer la question ; sinon la question part du choix
+    retenu. avec_extra=False : pour ce qui repose sur Arctic Fuse 3 (profil
+    Catch-up TV, mise à jour de l'interface), l'Extra-Light n'est pas proposée."""
     choix = ''
     if os.path.isfile(FICHIER_INTERFACE):
         choix = open(FICHIER_INTERFACE).read().strip()
-    cles = [cle for cle, _ in VERSIONS]
+    versions = [v for v in VERSIONS if avec_extra or v[0] != 'extra']
+    cles = [cle for cle, _ in versions]
     if redemander or choix not in cles:
-        numero = dialog.select('Quelle version ?', [libelle for _, libelle in VERSIONS],
-                               preselect=cles.index(choix) if choix in cles else 1)
+        numero = dialog.select('Quelle version ?', [libelle for _, libelle in versions],
+                               preselect=cles.index(choix) if choix in cles else cles.index('complet'))
         if numero < 0:
             return None   # « Annuler » : on ne fait rien
-        choix = VERSIONS[numero][0]
+        choix = versions[numero][0]
         os.makedirs(os.path.dirname(FICHIER_INTERFACE), exist_ok=True)
         with open(FICHIER_INTERFACE, 'w') as sortie:
             sortie.write(choix)
@@ -1043,10 +1049,14 @@ GUIDE_PROFIL = (
 # --- Les deux formules ------------------------------------------------------
 
 def formule_alkoflix():
-    if not dialog.yesno(TITRE, "Installer Arctic Fuse 3 et alkoFlix avec la configuration de DaRk-PrOphEt ?[CR]Kodi passera en français. Les réglages actuels de cet habillage seront remplacés (« Réinitialiser les réglages » les remet)."):
-        return
     version = choisir_version()
     if not version:
+        return
+    if version == 'extra':
+        if dialog.yesno(TITRE, "Installer alkoFlix avec l'habillage d'origine de Kodi (Estuary) ?[CR]Kodi passera en français. L'habillage actuel sera remplacé (« Réinitialiser les réglages » le remet)."):
+            formule_extra()
+        return
+    if not dialog.yesno(TITRE, "Installer Arctic Fuse 3 et alkoFlix avec la configuration de DaRk-PrOphEt ?[CR]Kodi passera en français. Les réglages actuels de cet habillage seront remplacés (« Réinitialiser les réglages » les remet)."):
         return
     noter_etat_avant()
     if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES) + ((VSTREAM, DNS, INTRO) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):
@@ -1065,10 +1075,32 @@ def formule_alkoflix():
         annoncer("C'est installé.[CR]Si des menus manquent, redémarre Kodi une fois.")
 
 
+ACCUEIL_ESTUARY_RETIRE = ('Movie', 'TVShow', 'Music', 'MusicVideo', 'Radio', 'TV', 'Games', 'Pictures', 'Weather')
+
+
+def formule_extra():
+    """Extra-Light : l'habillage d'origine de Kodi (Estuary) avec alkoFlix. Pas de
+    pack, pas de profil Catch-up TV, ni vStream, YouTube ou passe-intro : le moins
+    possible en mémoire. L'accueil d'Estuary garde « Vidéos » et « Extensions », où
+    se trouve alkoFlix ; les rubriques de bibliothèque vides en sont retirées."""
+    noter_etat_avant()
+    if not installer_tout((LANGUE, SONS, SAISIE, ALKOFLIX, FLUX, UPNEXT)):
+        return
+    franciser()
+    regler_confort()
+    relier_vstream(False)
+    if not changer_habillage(SKIN_ESTUARY):
+        dialog.ok(TITRE, "alkoFlix est installé, mais l'habillage n'a pas pu être changé.[CR]Choisis Estuary dans Paramètres > Interface.")
+        return
+    for nom in ACCUEIL_ESTUARY_RETIRE:
+        xbmc.executebuiltin('Skin.SetBool(HomeMenuNo%sButton)' % nom)
+    annoncer("C'est installé.[CR]alkoFlix est dans « Extensions » de l'accueil.")
+
+
 def formule_catchup():
     if not dialog.yesno(TITRE, "Installer Arctic Fuse 3, alkoFlix et Catch-up TV ?[CR]Au démarrage, Kodi proposera deux entrées : « %s » et « %s ».[CR]Kodi passera en français. Les réglages actuels de l'habillage seront remplacés (« Réinitialiser les réglages » les remet)." % (PROFIL_ALKOFLIX, PROFIL_CATCHUP)):
         return
-    version = choisir_version()
+    version = choisir_version(avec_extra=False)
     if not version:
         return
     noter_etat_avant()
@@ -1095,7 +1127,7 @@ def mettre_a_jour():
         return
     # La question est reposée, partant de la version actuelle : c'est par ici qu'on passe
     # d'une version à l'autre (de la Base à la Full par exemple) sans tout réinstaller.
-    version = choisir_version()
+    version = choisir_version(avec_extra=False)
     if not version:
         return
     if not installer_tout((LANGUE, SONS, SAISIE, ICONES) + ((VSTREAM, DNS, INTRO) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):
@@ -1449,6 +1481,21 @@ def vider(dossier, garder=()):
             except OSError:
                 pass
     return libere
+
+
+def nettoyer_paquets(jours=1):
+    """Kodi garde le zip de chaque version de chaque extension installée, sans
+    jamais rien effacer : sur un boîtier de 8 Go, les mises à jour finissent par
+    prendre des centaines de Mo (jusqu'à 60 Mo par version d'Arctic Fuse 3). Ces
+    fichiers ne servent plus une fois l'extension installée : on retire ceux de
+    plus de `jours` jours, au démarrage, sans rien demander."""
+    limite = time.time() - jours * 86400
+    for fichier in glob.glob(xbmcvfs.translatePath('special://home/addons/packages/') + '*.zip'):
+        try:
+            if os.path.getmtime(fichier) < limite:
+                os.remove(fichier)
+        except OSError as erreur:
+            log('paquet gardé %s : %r' % (os.path.basename(fichier), erreur))
 
 
 def nettoyer():

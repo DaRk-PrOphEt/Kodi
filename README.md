@@ -37,7 +37,8 @@ installer comme dépendances).
 
 Chaque formule demande la version à installer sur le profil alkoFlix :
 
-- **Allégée** (`packs/arctic-fuse-3-leger.zip`) : une rangée par page, pour les boîtiers modestes ;
+- **Extra-Light** : l'habillage d'origine de Kodi (Estuary) avec alkoFlix seulement, le plus léger ; pas de profil Catch-up TV ;
+- **Allégée** (`packs/arctic-fuse-3-leger.zip`) : deux rangées sur l'accueil (films et séries du moment) plus les reprises, et sur chaque page une seule rangée d'icônes (récents, populaires, genres…), sans jaquettes ;
 - **Base** (`packs/arctic-fuse-3.zip`) : l'interface complète ;
 - **Full** : la Base, plus vStream (dépôt officiel) en rubrique sur l'accueil et en second
   lecteur de TMDb Helper (fichier `vstream.json` des alKODIques).
