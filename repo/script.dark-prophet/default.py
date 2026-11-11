@@ -1075,14 +1075,39 @@ def formule_alkoflix():
         annoncer("C'est installé.[CR]Si des menus manquent, redémarre Kodi une fois.")
 
 
+_CATALOGUE = 'plugin://plugin.video.alkoflix/?name=%s&iconImage=%s&mode=catalogue.alkopaste_%s'
+# Les catégories de l'Extra-Light : les mêmes que les pages des autres versions. Estuary n'a pas de rubriques
+# personnalisables, mais le bouton « Favoris » de son accueil affiche une rangée de raccourcis.
+CATEGORIES_ESTUARY = (
+    ('Films', 'movies.png', _CATALOGUE % ('Films', 'movies.png', 'section&catalogue_section=films&catalogue_media_type=film')),
+    ('Séries', 'tv.png', _CATALOGUE % ('S%C3%A9ries', 'tv.png', 'section&catalogue_section=series&catalogue_media_type=serie')),
+    ('Dessins animés', 'genre_animation.png', _CATALOGUE % ('Dessins+anim%C3%A9s', 'genre_animation.png', 'folder&catalogue_folder=animation')),
+    ('Autres', 'genre_documentary.png', _CATALOGUE % ('Docus+%26+T%C3%A9l%C3%A9', 'genre_documentary.png', 'folder&catalogue_folder=documentaries')),
+    ('Favoris alkoFlix', 'favourites.png', _CATALOGUE % ('Favoris', 'favourites.png', 'global_favourites')),
+)
+
+
+def poser_categories_estuary():
+    """Ajoute les catégories d'alkoFlix aux favoris de Kodi (une seule fois chacune)."""
+    existants = {f.get('title') for f in (rpc('Favourites.GetFavourites') or {}).get('favourites') or []}
+    icones = 'special://home/addons/%s/resources/skins/Default/media/' % ALKOFLIX
+    for titre, icone, chemin in CATEGORIES_ESTUARY:
+        if titre not in existants:
+            rpc('Favourites.AddFavourite', {'title': titre, 'type': 'window', 'window': 'videos',
+                                            'windowparameter': chemin, 'thumbnail': icones + icone})
+    if 'Rechercher' not in existants:
+        rpc('Favourites.AddFavourite', {'title': 'Rechercher', 'type': 'script', 'path': 'script.dark-prophet,recherche',
+                                        'thumbnail': icones + 'search.png'})
+
+
 ACCUEIL_ESTUARY_RETIRE = ('Movie', 'TVShow', 'Music', 'MusicVideo', 'Radio', 'TV', 'Games', 'Pictures', 'Weather')
 
 
 def formule_extra():
     """Extra-Light : l'habillage d'origine de Kodi (Estuary) avec alkoFlix. Pas de
     pack, pas de profil Catch-up TV, ni vStream, YouTube ou passe-intro : le moins
-    possible en mémoire. L'accueil d'Estuary garde « Vidéos » et « Extensions », où
-    se trouve alkoFlix ; les rubriques de bibliothèque vides en sont retirées."""
+    possible en mémoire. L'accueil d'Estuary garde « Vidéos », « Extensions » et « Favoris » : les
+    catégories d'alkoFlix y sont posées en favoris ; les rubriques de bibliothèque vides en sont retirées."""
     noter_etat_avant()
     if not installer_tout((LANGUE, SONS, SAISIE, ALKOFLIX, FLUX, UPNEXT)):
         return
@@ -1094,7 +1119,8 @@ def formule_extra():
         return
     for nom in ACCUEIL_ESTUARY_RETIRE:
         xbmc.executebuiltin('Skin.SetBool(HomeMenuNo%sButton)' % nom)
-    annoncer("C'est installé.[CR]alkoFlix est dans « Extensions » de l'accueil.")
+    poser_categories_estuary()
+    annoncer("C'est installé.[CR]Les catégories d'alkoFlix sont dans « Favoris » de l'accueil, et alkoFlix dans « Extensions ».")
 
 
 def formule_catchup():
