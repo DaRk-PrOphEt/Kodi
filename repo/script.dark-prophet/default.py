@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import contextlib
+import errno
 import glob
 import html
 import json
@@ -87,7 +89,6 @@ PACK_MAX_ENTREE = 5 * 1024 * 1024       # un fichier décompressé
 PACK_MAX_TOTAL = 20 * 1024 * 1024       # tous les fichiers décompressés
 PACK_MAX_ENTREES = 500
 
-
 # Les deux entrées de l'écran de choix au démarrage (formule alkoFlix + Catch-up TV).
 PROFIL_ALKOFLIX = 'alkoFlix'
 PROFIL_CATCHUP = 'Catch-up TV'
@@ -109,6 +110,8 @@ MAITRE = xbmcvfs.translatePath('special://masterprofile/')
 PROFIL = xbmcvfs.translatePath('special://profile/')
 ADDON_DATA = os.path.join(PROFIL, 'addon_data')
 SAUVEGARDE = os.path.join(ADDON_DATA, 'script.dark-prophet', 'sauvegarde')
+# Place à garder libre en plus de ce qu'on écrit : Kodi doit pouvoir enregistrer ses propres fichiers.
+MARGE_PLACE = 5 * 1024 * 1024
 # Jusqu'à la 1.14, le propriétaire du dépôt pouvait saisir un jeton GitHub pour
 # publier un pack depuis Kodi. La fonction est retirée ; on efface ce qu'elle
 # a pu laisser sur l'appareil (le jeton y était en clair).
@@ -599,39 +602,454 @@ def membres_autorises(archive, racine):
         yield info, os.path.join(racine, *morceaux[1:])
 
 
-def ecrire_pack(archive, racine):
+# --- Remplacement sûr des réglages d'habillage ----------------------------------
+# Les dossiers DOSSIERS d'un profil ne sont jamais vidés avant que leur remplaçant soit
+# complet. Tout se passe dans <addon_data>/script.dark-prophet/transaction (même stockage
+# que les réglages, donc des renommages simples) :
+#   1. « preparation » : le nouveau contenu est écrit dans transaction/nouveau, puis contrôlé ;
+#   2. « bascule » (noté sur disque) : chaque dossier actuel part dans transaction/ancien,
+#      le nouveau prend sa place ;
+#   3. le dossier de transaction est effacé.
+# Après une coupure : en « preparation », rien n'avait été touché, on jette la préparation ;
+# en « bascule », le nouveau contenu est complet et vérifié : on termine la bascule ;
+# en « annulation » (échec pendant la bascule), on termine le retour aux anciens réglages ;
+# en « terminee », il ne reste qu'à effacer le dossier de transaction.
+# Un verrou par profil empêche deux lancements de toucher en même temps aux mêmes fichiers.
+
+class PackNonApplique(Exception):
+    """Les réglages n'ont pas été remplacés : ceux d'avant sont intacts (le message le dit)."""
+
+
+def cause(erreur):
+    if getattr(erreur, 'errno', None) == errno.ENOSPC:
+        return 'stockage plein'
+    if getattr(erreur, 'errno', None) == errno.EXDEV:
+        return 'dossiers sur des stockages différents'
+    return getattr(erreur, 'strerror', None) or str(erreur)
+
+
+def place_libre(chemin):
+    """Octets disponibles là où `chemin` sera écrit, ou None si l'appareil ne le dit pas."""
+    while not os.path.isdir(chemin) and os.path.dirname(chemin) != chemin:
+        chemin = os.path.dirname(chemin)
+    try:
+        return shutil.disk_usage(chemin).free
+    except (OSError, ValueError):
+        return None
+
+
+def verifier_place(chemin, octets):
+    """Refuse AVANT toute écriture s'il manque de la place. Si l'appareil ne donne pas
+    l'espace libre, on continue : rien n'est supprimé avant que la copie soit complète,
+    un stockage plein ne fait qu'interrompre la préparation."""
+    libre, besoin = place_libre(chemin), octets + MARGE_PLACE
+    if libre is None:
+        log('espace libre inconnu pour %s : on continue' % chemin)
+    elif libre < besoin:
+        raise PackNonApplique("Pas assez de place sur l'appareil (il faut environ %d Mo de libre).[CR]"
+                              "Tes réglages actuels n'ont pas été modifiés. Lance « Nettoyer Kodi » puis réessaie."
+                              % (besoin // 1048576 + 1))
+
+
+def inventaire(dossier):
+    """{chemin relatif : taille} des fichiers sous `dossier` ({} s'il n'existe pas).
+    Lève OSError si un sous-dossier est illisible, au lieu de l'ignorer."""
+    if not os.path.isdir(dossier):
+        return {}
+    contenu = {}
+
+    def illisible(erreur):
+        raise erreur
+
+    for chemin, _, fichiers in os.walk(dossier, onerror=illisible):
+        for fichier in fichiers:
+            complet = os.path.join(chemin, fichier)
+            contenu[os.path.relpath(complet, dossier).replace(os.sep, '/')] = os.path.getsize(complet)
+    return contenu
+
+
+def forcer_ecriture(chemin):
+    """Fait écrire réellement un fichier ou un dossier sur le stockage, pour qu'une coupure
+    de courant ne laisse pas un fichier vide derrière un renommage. Au mieux : certains
+    systèmes refusent (dossiers sous Windows), sans gravité."""
+    try:
+        fd = os.open(chemin, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def dossier_transaction(racine):
+    return os.path.join(racine, 'script.dark-prophet', 'transaction')
+
+
+def transaction_en_attente(racine):
+    transaction = dossier_transaction(racine)
+    return os.path.isdir(transaction) or os.path.isdir(transaction + '.fin')
+
+
+def noter_etape(transaction, etape):
+    provisoire = os.path.join(transaction, 'etape.tmp')
+    with open(provisoire, 'w') as sortie:
+        sortie.write(etape)
+        sortie.flush()
+        os.fsync(sortie.fileno())
+    os.replace(provisoire, os.path.join(transaction, 'etape'))
+    forcer_ecriture(transaction)
+
+
+def lire_etape(transaction):
+    try:
+        with open(os.path.join(transaction, 'etape')) as source:
+            return source.read().strip()
+    except OSError:
+        return ''
+
+
+def chemins_du_dossier(racine, transaction, dossier):
+    return (os.path.join(racine, dossier), os.path.join(transaction, 'nouveau', dossier),
+            os.path.join(transaction, 'ancien', dossier))
+
+
+def basculer(racine, transaction):
+    """Met les dossiers préparés en place. Chaque pas peut être rejoué après une coupure."""
     for dossier in DOSSIERS:
-        shutil.rmtree(os.path.join(racine, dossier), ignore_errors=True)
-    nombre = 0
-    for info, cible in membres_autorises(archive, racine):
-        os.makedirs(os.path.dirname(cible), exist_ok=True)
-        with archive.open(info) as source, open(cible, 'wb') as sortie:
-            shutil.copyfileobj(source, sortie)
-        nombre += 1
-    return nombre
+        actuel, nouveau, ancien = chemins_du_dossier(racine, transaction, dossier)
+        if os.path.isdir(nouveau):
+            if os.path.lexists(actuel):
+                if os.path.lexists(ancien):
+                    # L'ancien est déjà de côté : `actuel` a été recréé entre-temps (Kodi,
+                    # réglages par défaut). Le nouveau contenu, complet, le remplace.
+                    shutil.rmtree(actuel)
+                else:
+                    os.makedirs(os.path.dirname(ancien), exist_ok=True)
+                    os.replace(actuel, ancien)
+            os.replace(nouveau, actuel)
+        elif not os.path.lexists(actuel) and os.path.isdir(ancien):
+            os.replace(ancien, actuel)   # ne devrait pas arriver : on ne laisse jamais un dossier manquer
+    forcer_ecriture(racine)
+
+
+def annuler(racine, transaction):
+    """Échec pendant la bascule : remet les dossiers d'avant. L'étape « annulation » est
+    notée d'abord : une annulation interrompue est terminée à la reprise (on ne réinstalle
+    pas ce qui vient d'échouer). Chaque pas peut être rejoué ; le nouveau contenu retourne
+    dans `nouveau`."""
+    noter_etape(transaction, 'annulation')
+    for dossier in DOSSIERS:
+        actuel, nouveau, ancien = chemins_du_dossier(racine, transaction, dossier)
+        if os.path.lexists(nouveau):
+            if os.path.lexists(actuel) and os.path.lexists(ancien):
+                shutil.rmtree(actuel)   # recréé entre-temps
+        elif os.path.lexists(actuel):
+            os.replace(actuel, nouveau)   # le nouveau était en place : on le remet de côté
+        if os.path.isdir(ancien):
+            os.replace(ancien, actuel)
+    noter_etape(transaction, 'annulee')
+
+
+def jeter(transaction):
+    """Efface un dossier de transaction terminé : renommé d'abord, pour qu'un effacement
+    interrompu ne soit jamais pris pour une transaction à reprendre."""
+    fin = transaction + '.fin'
+    shutil.rmtree(fin, ignore_errors=True)
+    if os.path.isdir(transaction):
+        os.replace(transaction, fin)
+    shutil.rmtree(fin, ignore_errors=True)
+
+
+def reprendre(racine):
+    """Termine ou annule une application interrompue dans ce profil (coupure, arrêt de
+    Kodi). Renvoie 'terminee', 'annulee', 'abandonnee' ou None (rien en attente). À n'appeler que
+    lorsque l'habillage n'est pas chargé dans ce profil. Lève OSError en cas d'échec :
+    la transaction reste alors intacte pour une nouvelle tentative."""
+    transaction = dossier_transaction(racine)
+    resultat = None
+    if os.path.isdir(transaction):
+        etape = lire_etape(transaction)
+        if etape == 'bascule':
+            basculer(racine, transaction)
+            noter_etape(transaction, 'terminee')
+            resultat = 'terminee'
+        elif etape == 'annulation':
+            annuler(racine, transaction)
+            resultat = 'annulee'
+        elif etape == 'terminee':
+            resultat = 'terminee'
+        else:
+            resultat = 'abandonnee'
+        log('application interrompue dans %s : %s' % (racine, resultat))
+    jeter(transaction)
+    return resultat
+
+
+OCCUPE = ("Une autre opération de DaRk-PrOphEt est en cours sur ce profil.[CR]"
+          "Attends qu'elle se termine (ou redémarre Kodi), puis relance. Rien n'a été modifié.")
+
+
+@contextlib.contextmanager
+def verrou(racine):
+    """Un seul lancement à la fois touche aux réglages d'un profil. Le fichier note le
+    processus de Kodi : laissé par un Kodi arrêté depuis (numéro différent), il est repris.
+    Lève PackNonApplique si le profil est occupé."""
+    dossier = os.path.join(racine, 'script.dark-prophet')
+    fichier = os.path.join(dossier, 'verrou')
+    try:
+        os.makedirs(dossier, exist_ok=True)
+        for _ in range(2):
+            try:
+                fd = os.open(fichier, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                break
+            except FileExistsError:
+                try:
+                    with open(fichier) as source:
+                        proprietaire = source.read().strip()
+                    recent = time.time() - os.path.getmtime(fichier) < 60
+                except OSError:
+                    continue
+                if proprietaire == str(os.getpid()) or (not proprietaire and recent):
+                    raise PackNonApplique(OCCUPE)
+                os.remove(fichier)
+        else:
+            raise PackNonApplique(OCCUPE)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+    except OSError as erreur:
+        log('verrou impossible dans %s : %r' % (racine, erreur))
+        raise PackNonApplique("Les réglages de ce profil ne sont pas modifiables (%s).[CR]"
+                              "Rien n'a été modifié." % cause(erreur))
+    try:
+        yield
+    finally:
+        try:
+            os.remove(fichier)
+        except OSError as erreur:
+            log('verrou non retiré : %r' % erreur)
+
+
+def remplacer_dossiers(racine, preparer, attendu):
+    with verrou(racine):
+        _remplacer_dossiers(racine, preparer, attendu)
+
+
+def _remplacer_dossiers(racine, preparer, attendu):
+    """Remplace les dossiers DOSSIERS de `racine` sans jamais les laisser à moitié écrits.
+    preparer(dossier) écrit le nouveau contenu dans `dossier` (un sous-dossier par entrée
+    de DOSSIERS, déjà créé). attendu : {chemin relatif : taille} de ce qui doit en sortir.
+    Lève PackNonApplique si les réglages n'ont pas été remplacés."""
+    transaction = dossier_transaction(racine)
+    try:
+        reprendre(racine)
+    except OSError as erreur:
+        log('reprise impossible dans %s : %r' % (racine, erreur))
+        raise PackNonApplique("Une installation précédente n'a pas pu être terminée (%s).[CR]"
+                              "Rien de plus n'a été modifié." % cause(erreur))
+    try:
+        verifier_place(racine, sum(attendu.values()) + 4096 * len(attendu))
+        os.makedirs(transaction)
+        noter_etape(transaction, 'preparation')
+        nouveau = os.path.join(transaction, 'nouveau')
+        for dossier in DOSSIERS:
+            os.makedirs(os.path.join(nouveau, dossier))
+        preparer(nouveau)
+        if inventaire(nouveau) != attendu:
+            raise OSError('contenu préparé incomplet')
+        # Les renommages ne déplacent rien que si tout est sur le même stockage.
+        if os.stat(nouveau).st_dev != os.stat(racine).st_dev:
+            raise OSError(errno.EXDEV, os.strerror(errno.EXDEV))
+        noter_etape(transaction, 'bascule')
+    except (OSError, zipfile.BadZipFile, zlib.error) as erreur:
+        log('préparation abandonnée dans %s : %r' % (racine, erreur))
+        try:
+            jeter(transaction)
+        except OSError:
+            pass   # rien n'a été basculé : la prochaine reprise jettera la préparation
+        raise PackNonApplique("Les nouveaux réglages n'ont pas pu être préparés (%s).[CR]"
+                              "Tes réglages actuels n'ont pas été modifiés." % cause(erreur))
+    try:
+        basculer(racine, transaction)
+    except OSError as erreur:
+        log('bascule interrompue dans %s : %r' % (racine, erreur))
+        try:
+            annuler(racine, transaction)
+            jeter(transaction)
+        except OSError as autre:
+            log('annulation impossible : %r' % autre)
+            if lire_etape(transaction) == 'annulation':
+                raise PackNonApplique("Les nouveaux réglages n'ont pas pu être mis en place (%s).[CR]"
+                                      "Tes réglages précédents seront remis au prochain lancement de DaRk-PrOphEt."
+                                      % cause(erreur))
+            raise PackNonApplique("La mise en place des réglages a été interrompue (%s).[CR]"
+                                  "Elle sera terminée au prochain lancement de DaRk-PrOphEt." % cause(erreur))
+        raise PackNonApplique("Les nouveaux réglages n'ont pas pu être mis en place (%s).[CR]"
+                              "Tes réglages précédents ont été remis." % cause(erreur))
+    try:
+        noter_etape(transaction, 'terminee')
+        jeter(transaction)
+    except OSError as erreur:
+        log('transaction gardée, effacée au prochain lancement : %r' % erreur)
+
+
+def ecrire_pack(archive, racine):
+    """Remplace les réglages d'habillage de `racine` par ceux du pack (voir
+    remplacer_dossiers). Renvoie le nombre de fichiers écrits ; lève PackNonApplique
+    si rien n'a été changé."""
+    try:
+        raison = verifier_pack(archive)
+    except zipfile.BadZipFile as erreur:
+        raison = str(erreur)
+    if raison:
+        raise PackNonApplique("La configuration téléchargée est inutilisable (%s).[CR]"
+                              "Tes réglages actuels n'ont pas été modifiés." % raison)
+    membres = [(info, os.path.relpath(cible, racine).replace(os.sep, '/'))
+               for info, cible in membres_autorises(archive, racine)]
+
+    def preparer(nouveau):
+        for info, relatif in membres:
+            cible = os.path.join(nouveau, *relatif.split('/'))
+            os.makedirs(os.path.dirname(cible), exist_ok=True)
+            with archive.open(info) as source, open(cible, 'wb') as sortie:
+                shutil.copyfileobj(source, sortie)
+                sortie.flush()
+                os.fsync(sortie.fileno())
+
+    remplacer_dossiers(racine, preparer, {relatif: info.file_size for info, relatif in membres})
+    return len(membres)
+
+
+def taille_dossiers(racine):
+    return sum(taille + 4096 for dossier in DOSSIERS
+               for taille in inventaire(os.path.join(racine, dossier)).values())
 
 
 def sauvegarder_actuel():
     """Copie des réglages d'habillage d'AVANT la première installation : c'est
     elle que « Réinitialiser les réglages » remet. On ne la remplace donc pas
-    aux installations et mises à jour suivantes."""
+    aux installations et mises à jour suivantes. Elle est copiée à côté puis
+    renommée : un dossier « sauvegarde » présent est toujours complet ; une copie
+    interrompue (sauvegarde.tmp) est refaite à la tentative suivante. Lève
+    PackNonApplique en cas d'échec : il ne faut alors rien remplacer."""
     if os.path.isdir(SAUVEGARDE):
         return
-    os.makedirs(SAUVEGARDE)
-    for dossier in DOSSIERS:
-        source = os.path.join(ADDON_DATA, dossier)
-        if os.path.isdir(source):
-            shutil.copytree(source, os.path.join(SAUVEGARDE, dossier))
+    with verrou(ADDON_DATA):
+        _sauvegarder()
+
+
+def _sauvegarder():
+    provisoire = SAUVEGARDE + '.tmp'
+    try:
+        shutil.rmtree(provisoire, ignore_errors=True)
+        verifier_place(ADDON_DATA, taille_dossiers(ADDON_DATA))
+        os.makedirs(provisoire)
+        attendu = {}
+        for dossier in DOSSIERS:
+            source = os.path.join(ADDON_DATA, dossier)
+            if os.path.isdir(source):
+                shutil.copytree(source, os.path.join(provisoire, dossier))
+                attendu.update({dossier + '/' + relatif: taille for relatif, taille in inventaire(source).items()})
+        if inventaire(provisoire) != attendu:
+            raise OSError('copie incomplète')
+        for relatif in attendu:
+            forcer_ecriture(os.path.join(provisoire, *relatif.split('/')))
+        os.replace(provisoire, SAUVEGARDE)
+        forcer_ecriture(os.path.dirname(SAUVEGARDE))
+    except OSError as erreur:
+        log('sauvegarde impossible : %r' % erreur)
+        shutil.rmtree(provisoire, ignore_errors=True)
+        raise PackNonApplique("La sauvegarde de tes réglages actuels n'a pas pu être faite (%s).[CR]"
+                              "Rien n'a été modifié." % cause(erreur))
+
+
+def remettre_sauvegarde():
+    """Remet les réglages d'habillage d'avant la première installation (voir
+    remplacer_dossiers). La sauvegarde est copiée, jamais déplacée : elle reste
+    intacte si la remise échoue. Lève PackNonApplique dans ce cas."""
+    attendu = {}
+    try:
+        for dossier in DOSSIERS:
+            attendu.update({dossier + '/' + relatif: taille
+                            for relatif, taille in inventaire(os.path.join(SAUVEGARDE, dossier)).items()})
+        # Une sauvegarde d'avant la 1.17.7 n'a jamais été vérifiée : on refuse au moins
+        # de remettre des réglages d'habillage illisibles.
+        reglages = os.path.join(SAUVEGARDE, SKIN, 'settings.xml')
+        if os.path.isfile(reglages):
+            ElementTree.parse(reglages)
+    except (OSError, ElementTree.ParseError) as erreur:
+        log('sauvegarde illisible : %r' % erreur)
+        raise PackNonApplique("La sauvegarde des réglages d'origine est illisible (%s).[CR]"
+                              "Rien n'a été modifié." % cause(erreur))
+
+    def preparer(nouveau):
+        for dossier in DOSSIERS:
+            source = os.path.join(SAUVEGARDE, dossier)
+            if os.path.isdir(source):
+                shutil.copytree(source, os.path.join(nouveau, dossier), dirs_exist_ok=True)
+        for relatif in attendu:
+            forcer_ecriture(os.path.join(nouveau, *relatif.split('/')))
+
+    remplacer_dossiers(ADDON_DATA, preparer, attendu)
 
 
 def hors_de_l_habillage(action):
     """Kodi réécrit les réglages de l'habillage actif quand il le quitte : on
-    passe donc sur l'habillage d'origine le temps de toucher aux fichiers."""
+    passe donc sur l'habillage d'origine le temps de toucher aux fichiers.
+    L'habillage est remis même si `action` échoue (l'erreur suit son cours)."""
     if xbmc.getSkinDir() == SKIN and not changer_habillage(SKIN_SECOURS):
         dialog.ok(TITRE, "Impossible de quitter l'habillage pour appliquer les réglages.")
         return False
-    action()
-    return changer_habillage(SKIN)
+    try:
+        action()
+    finally:
+        actif = changer_habillage(SKIN)
+    return actif
+
+
+def reprendre_au_lancement():
+    """Assistant : une application interrompue dans ce profil est terminée tout de suite,
+    l'habillage étant quitté le temps de toucher aux fichiers."""
+    if not transaction_en_attente(ADDON_DATA):
+        return
+    actif = xbmc.getSkinDir() == SKIN
+    if actif and not changer_habillage(SKIN_SECOURS):
+        return   # on réessaiera au prochain lancement ; rien n'est perdu
+    try:
+        with verrou(ADDON_DATA):
+            resultat = reprendre(ADDON_DATA)
+        if resultat == 'terminee':
+            dialog.ok(TITRE, "Une mise en place de l'interface avait été interrompue : elle est maintenant terminée.")
+        elif resultat == 'annulee':
+            dialog.ok(TITRE, "Une mise à jour de l'interface avait échoué : tes réglages précédents sont remis.")
+    except PackNonApplique as erreur:
+        dialog.ok(TITRE, str(erreur))
+    except OSError as erreur:
+        log('reprise impossible : %r' % erreur)
+        dialog.ok(TITRE, "Une installation interrompue n'a pas pu être terminée (%s).[CR]"
+                         "Rien n'a été effacé. Libère de la place puis relance." % cause(erreur))
+    finally:
+        if actif:
+            changer_habillage(SKIN)
+
+
+def reprendre_au_demarrage():
+    """Service : termine une application interrompue seulement si Arctic Fuse 3 n'est
+    pas l'habillage de ce profil (Kodi réécrit les réglages de l'habillage actif en le
+    quittant). Sinon on prévient, et l'assistant s'en chargera à son lancement."""
+    if not transaction_en_attente(ADDON_DATA):
+        return
+    if xbmc.getSkinDir() == SKIN:
+        log('application interrompue : reprise au prochain lancement du script')
+        xbmc.executebuiltin('Notification(%s,Installation interrompue - relance %s pour la terminer,10000)' % (TITRE, TITRE))
+        return
+    try:
+        with verrou(ADDON_DATA):
+            reprendre(ADDON_DATA)
+    except (OSError, PackNonApplique) as erreur:
+        log('reprise impossible ou reportée : %s' % erreur)
 
 
 def appliquer_ici(archive, fond=None, bouton_catchup=None, vstream=None):
@@ -1276,7 +1694,13 @@ def mettre_a_jour():
     relier_alkoflix()
     relier_vstream(version == 'full')
     poser_images_habillage()
-    if appliquer_ici(archive, choisir_fond(redemander=False), PROFIL_CATCHUP in profils(), version == 'full'):
+    try:
+        actif = appliquer_ici(archive, choisir_fond(redemander=False), PROFIL_CATCHUP in profils(), version == 'full')
+    except PackNonApplique as erreur:
+        if PROFIL_CATCHUP in profils():
+            raise PackNonApplique("%s[CR]Le profil « %s », lui, est déjà à jour : relance la mise à jour pour finir." % (erreur, PROFIL_CATCHUP))
+        raise
+    if actif:
         if logos:
             annoncer("L'interface est à jour.[CR]Redémarre Kodi : les profils auront leur logo sur l'écran de choix.")
         else:
@@ -1310,12 +1734,19 @@ def preparer_profil_catchup(pack):
     copier_extensions_actives(dossier)
     choisir_habillage_du_profil(dossier)
     regler_confort(dossier)
+    conseil = ''
     if pack is not None:
-        ecrire_pack(pack, os.path.join(dossier, 'addon_data'))
-        ajuster_menu_options(racine=os.path.join(dossier, 'addon_data'))
-        fond = telecharger_fond(FOND_CATCHUP)
-        if fond:
-            poser_fond(fond, os.path.join(dossier, 'addon_data'))
+        try:
+            ecrire_pack(pack, os.path.join(dossier, 'addon_data'))
+        except PackNonApplique as erreur:
+            log('profil Catch-up TV : %s' % erreur)
+            conseil = ("[CR]La configuration du profil « %s » n'a pas pu être écrite : ouvre ce profil, "
+                       "puis DaRk-PrOphEt > « Remettre la configuration Catch-up TV »." % PROFIL_CATCHUP)
+        else:
+            ajuster_menu_options(racine=os.path.join(dossier, 'addon_data'))
+            fond = telecharger_fond(FOND_CATCHUP)
+            if fond:
+                poser_fond(fond, os.path.join(dossier, 'addon_data'))
 
     renomme = insister(renommer_profil_principal, PROFIL_ALKOFLIX)
     ecran = insister(activer_ecran_de_choix)
@@ -1327,9 +1758,9 @@ def preparer_profil_catchup(pack):
     if not ecran:
         restes.append("activer « Afficher l'écran de connexion au démarrage »")
     if restes:
-        annoncer("C'est installé. Reste à faire à la main dans Paramètres > Profils :[CR]- " + "[CR]- ".join(restes))
+        annoncer("C'est installé. Reste à faire à la main dans Paramètres > Profils :[CR]- " + "[CR]- ".join(restes) + conseil)
     else:
-        annoncer("C'est installé.[CR]Redémarre Kodi : tu choisiras entre « %s » et « %s »." % (PROFIL_ALKOFLIX, PROFIL_CATCHUP))
+        annoncer("C'est installé.[CR]Redémarre Kodi : tu choisiras entre « %s » et « %s »." % (PROFIL_ALKOFLIX, PROFIL_CATCHUP) + conseil)
 
 
 def reappliquer_catchup():
@@ -1681,15 +2112,18 @@ def reinitialiser():
         avant = SKIN_SECOURS
     # 1. On quitte Arctic Fuse 3 (Kodi réécrit les réglages de l'habillage actif en le quittant),
     #    on remet ses réglages d'avant, puis on revient à l'habillage d'avant.
-    if xbmc.getSkinDir() == SKIN and not changer_habillage(SKIN_SECOURS):
+    actif = xbmc.getSkinDir() == SKIN
+    if actif and not changer_habillage(SKIN_SECOURS):
         dialog.ok(TITRE, "Impossible de quitter l'habillage. Change-le dans Paramètres > Interface, puis relance.")
         return
-    for dossier in DOSSIERS:
-        cible = os.path.join(ADDON_DATA, dossier)
-        shutil.rmtree(cible, ignore_errors=True)
-        source = os.path.join(SAUVEGARDE, dossier)
-        if os.path.isdir(source):
-            shutil.copytree(source, cible)
+    try:
+        remettre_sauvegarde()
+    except PackNonApplique as erreur:
+        # Rien d'autre n'est défait : la sauvegarde, les profils et les réglages de Kodi restent.
+        if actif:
+            changer_habillage(SKIN)
+        dialog.ok(TITRE, "%s[CR]La réinitialisation s'est arrêtée là : relance-la quand le problème est réglé." % erreur)
+        return
     changer_habillage(avant)
     # 2. Les réglages de Kodi relevés avant la première installation (absents si elle date d'une ancienne version).
     for cle in REGLAGES_KODI[1:]:
@@ -1698,6 +2132,11 @@ def reinitialiser():
                 xbmc.sleep(4000)
     # 3. Les profils : un seul, sans écran de choix. Même méthode que pour les logos.
     redemarrer = remettre_profil_unique(etat.get('profil') or 'Master user')
+    if redemarrer is None:
+        # Rien n'est effacé (sauvegarde, état d'avant, profils) : une nouvelle réinitialisation reprendra d'ici.
+        annoncer("Les réglages sont remis, mais les profils n'ont pas pu être modifiés.[CR]"
+                 "Relance « Réinitialiser les réglages » pour terminer.")
+        return
     # 4. Ce que le script avait noté pour lui-même.
     shutil.rmtree(SAUVEGARDE, ignore_errors=True)
     try:
@@ -1721,7 +2160,10 @@ def reinitialiser():
 
 def remettre_profil_unique(nom):
     """Ne garde que le profil principal, sous son nom d'avant, sans écran de
-    choix ni logo. Renvoie True si profiles.xml a changé (redémarrage nécessaire)."""
+    choix ni logo. Renvoie True si profiles.xml a changé (redémarrage nécessaire),
+    False s'il n'y avait rien à changer, None en cas d'échec."""
+    if not os.path.isfile(FICHIER_PROFILS):
+        return False   # un seul profil, jamais enregistré : rien à remettre
     try:
         arbre = ElementTree.parse(FICHIER_PROFILS)
         racine = arbre.getroot()
@@ -1755,7 +2197,7 @@ def remettre_profil_unique(nom):
         return True
     except (OSError, ElementTree.ParseError) as erreur:
         log('profils : %r' % erreur)
-        return False
+        return None
 
 
 def rechercher(genre='', sections=''):
@@ -1830,6 +2272,7 @@ def menu():
     lever_verrou_profils()
     oublier_jeton()
     retirer_lumio()
+    reprendre_au_lancement()
     if dans_le_profil_principal():
         entrees = [
             ('Formule alkoFlix', formule_alkoflix),
@@ -1855,7 +2298,11 @@ def menu():
         ]
     choix = dialog.select(TITRE, [libelle for libelle, _ in entrees])
     if choix >= 0:
-        entrees[choix][1]()
+        try:
+            entrees[choix][1]()
+        except PackNonApplique as erreur:
+            log('réglages non appliqués : %s' % erreur)
+            dialog.ok(TITRE, str(erreur))
 
 
 if __name__ == '__main__':

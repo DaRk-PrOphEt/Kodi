@@ -3,10 +3,12 @@
 # pose des logos (voir poser_logos dans default.py) et repose nos images dans
 # l'habillage si une de ses mises à jour les a remplacées, puis recharge les
 # rangées de l'accueil quand un favori est ajouté. Retire aussi les paquets
-# d'installation anciens, que Kodi garde sans fin.
+# d'installation anciens, que Kodi garde sans fin. Termine aussi une mise en place
+# des réglages interrompue (coupure, arrêt de Kodi) quand c'est sans risque.
 import default
 
 default.lever_verrou_profils()
+default.reprendre_au_demarrage()
 default.poser_images_habillage(telecharger=False)
 default.oublier_jeton()
 default.nettoyer_paquets()
