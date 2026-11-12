@@ -9,6 +9,11 @@ Une « coupure » est simulée par une exception que le code ne peut pas interce
 reprise, comme le ferait Kodi au démarrage suivant.
 """
 import errno
+import json
+import signal
+import subprocess
+import threading
+import time
 import io
 import os
 import shutil
@@ -67,8 +72,9 @@ class Panne:
     CIBLES = ((os, 'replace'), (os, 'makedirs'), (os, 'fsync'), (shutil, 'rmtree'), (shutil, 'copyfileobj'),
               (shutil, 'copytree'))
 
-    def __init__(self, numero=None, mode='coupure', erreur=errno.EIO):
+    def __init__(self, numero=None, mode='coupure', erreur=errno.EIO, seulement=None):
         self.numero, self.mode, self.erreur, self.appels, self.vrais = numero, mode, erreur, 0, {}
+        self.seulement = seulement   # ne compter que ces fonctions (ex. ('copytree',))
 
     def __enter__(self):
         for module, nom in self.CIBLES:
@@ -83,6 +89,8 @@ class Panne:
 
     def envelopper(self, nom, vraie):
         def appel(*args, **kwargs):
+            if self.seulement and nom not in self.seulement:
+                return vraie(*args, **kwargs)
             self.appels += 1
             touche = self.numero is not None and (self.appels == self.numero or
                                                   (self.mode == 'persistante' and self.appels > self.numero and nom == 'replace'))
@@ -105,11 +113,15 @@ class Base(unittest.TestCase):
         self.messages = []
         d.dialog = types.SimpleNamespace(ok=lambda *a: self.messages.append(a[-1]), yesno=lambda *a: True)
         self.vrai_place = d.place_libre
+        # Après une coupure simulée, l'essai suivant joue le rôle du lancement d'après : un verrou
+        # resté vide (créateur mort) est repris sans attendre (voir Verrou pour le délai réel).
+        self.vrai_vide, d.ABANDON_VIDE = d.ABANDON_VIDE, -1
         xbmc.habillage = SKIN
         xbmc.commandes[:] = []
 
     def tearDown(self):
         d.place_libre = self.vrai_place
+        d.ABANDON_VIDE = self.vrai_vide
 
     def sans_residu(self, racine=None):
         t = d.dossier_transaction(racine or self.racine)
@@ -160,7 +172,7 @@ class Sauvegarde(Base):
         self.sans_residu()
 
     def test_stockage_plein(self):
-        with Panne(3, mode='erreur', erreur=errno.ENOSPC):
+        with Panne(1, mode='erreur', erreur=errno.ENOSPC, seulement=('copytree',)):
             with self.assertRaises(d.PackNonApplique) as refus:
                 d.sauvegarder_actuel()
         self.assertIn('stockage plein', str(refus.exception))
@@ -178,7 +190,7 @@ class Sauvegarde(Base):
     def test_echec_de_sauvegarde_bloque_l_application(self):
         d.changer_habillage = lambda skin: True
         d.ajuster_menu_options = lambda *a, **k: None
-        with Panne(3, mode='erreur', erreur=errno.ENOSPC):
+        with Panne(1, mode='erreur', erreur=errno.ENOSPC, seulement=('copytree',)):
             with self.assertRaises(d.PackNonApplique):
                 d.appliquer_ici(pack())
         self.assertEqual(etat(self.racine), ANCIEN)
@@ -415,7 +427,7 @@ class Restauration(Base):
         self.assertEqual(etat(self.racine), {k: v for k, v in ANCIEN.items() if k.startswith(SKIN)})
 
     def test_echec_de_copie_puis_nouvelle_tentative(self):
-        with Panne(8, mode='erreur', erreur=errno.ENOSPC):
+        with Panne(1, mode='erreur', erreur=errno.ENOSPC, seulement=('copytree',)):
             with self.assertRaises(d.PackNonApplique):
                 d.remettre_sauvegarde()
         self.assertEqual(etat(self.racine), NOUVEAU)
@@ -596,8 +608,9 @@ class Concurrence(Base):
     def test_profil_occupe_par_ce_kodi(self):
         d.ecrire_pack(pack(), self.racine)
         verrou = os.path.join(self.racine, 'script.dark-prophet', 'verrou')
-        with open(verrou, 'w') as sortie:
-            sortie.write(str(os.getpid()))
+        demarrage, battement = d.horloge_demarrage()
+        with open(verrou, 'w') as sortie:   # opération en cours dans ce Kodi (battement récent)
+            json.dump({'id': 'autre', 'pid': os.getpid(), 'demarrage': demarrage, 'battement': battement}, sortie)
         with self.assertRaises(d.PackNonApplique) as refus:
             d.ecrire_pack(pack(ANCIEN), self.racine)
         self.assertIn('autre opération', str(refus.exception))
@@ -605,9 +618,11 @@ class Concurrence(Base):
         self.assertTrue(os.path.isfile(verrou))   # celui de l'autre lancement n'est pas retiré
         os.remove(verrou)
 
-    def test_verrou_laisse_par_un_kodi_arrete(self):
+    def test_verrou_laisse_avant_un_redemarrage_de_l_appareil(self):
         verrou = os.path.join(self.racine, 'script.dark-prophet', 'verrou')
-        poser(self.racine, {'script.dark-prophet/verrou': b'999999999'})
+        demarrage, battement = d.horloge_demarrage()
+        poser(self.racine, {'script.dark-prophet/verrou': json.dumps(
+            {'id': 'x', 'pid': os.getpid(), 'demarrage': 'autre-demarrage', 'battement': battement}).encode()})
         d.ecrire_pack(pack(), self.racine)
         self.assertEqual(etat(self.racine), NOUVEAU)
         self.assertFalse(os.path.exists(verrou))
@@ -639,7 +654,9 @@ class Concurrence(Base):
                 d.ecrire_pack(pack(), self.racine)
         except Coupure:
             pass
-        poser(self.racine, {'script.dark-prophet/verrou': str(os.getpid()).encode()})
+        demarrage, battement = d.horloge_demarrage()
+        poser(self.racine, {'script.dark-prophet/verrou': json.dumps(
+            {'id': 'autre', 'pid': os.getpid(), 'demarrage': demarrage, 'battement': battement}).encode()})
         xbmc.habillage = 'skin.estuary'
         d.reprendre_au_demarrage()   # ne lève rien, ne touche à rien
         self.assertTrue(d.transaction_en_attente(self.racine))
@@ -743,6 +760,230 @@ class AnciennesSauvegardes(Base):
             self.assertIsNone(d.remettre_profil_unique('X'))  # illisible : échec signalé
         finally:
             d.FICHIER_PROFILS = vrai
+
+
+ENFANT = '''
+import os, sys, time
+sys.path.insert(0, sys.argv[1])
+from kodi_factice import default as d
+with d.verrou(sys.argv[2]):
+    print('tenu', flush=True)
+    time.sleep(60)
+'''
+
+
+class Verrou(Base):
+    '''A : verrou par opération (identifiant, battement), jamais volé tant qu'il bat.'''
+
+    def setUp(self):
+        super().setUp()
+        self.anciens = d.BATTEMENT, d.ABANDON
+        d.BATTEMENT, d.ABANDON, d.ABANDON_VIDE = 0.05, 5, 2
+        self.fichier = os.path.join(self.racine, 'script.dark-prophet', 'verrou')
+
+    def tearDown(self):
+        d.BATTEMENT, d.ABANDON = self.anciens
+        super().tearDown()
+
+    def poser_verrou(self, **valeurs):
+        demarrage, battement = d.horloge_demarrage()
+        contenu = dict({'id': 'autre', 'pid': os.getpid(), 'demarrage': demarrage, 'battement': battement}, **valeurs)
+        poser(self.racine, {'script.dark-prophet/verrou': json.dumps(contenu).encode()})
+
+    def test_acquisition_battement_et_liberation(self):
+        with d.verrou(self.racine):
+            premier = json.load(open(self.fichier))
+            time.sleep(0.3)
+            second = json.load(open(self.fichier))
+            self.assertEqual(premier['id'], second['id'])
+            self.assertGreater(second['battement'], premier['battement'])   # le battement avance
+        self.assertFalse(os.path.exists(self.fichier))
+        self.assertEqual([f for f in os.listdir(os.path.dirname(self.fichier)) if f.startswith('verrou')], [])
+
+    def test_deux_operations_simultanees_meme_processus(self):
+        depart, resultats = threading.Barrier(4), []
+
+        def operation():
+            depart.wait()
+            try:
+                with d.verrou(self.racine):
+                    time.sleep(0.4)
+                resultats.append('tenu')
+            except d.PackNonApplique:
+                resultats.append('refusé')
+        fils = [threading.Thread(target=operation) for _ in range(4)]
+        for f in fils:
+            f.start()
+        for f in fils:
+            f.join()
+        self.assertEqual(sorted(resultats), ['refusé', 'refusé', 'refusé', 'tenu'])
+
+    def lancer_enfant(self):
+        enfant = subprocess.Popen([sys.executable, '-I', '-c', ENFANT, os.path.dirname(os.path.abspath(__file__)), self.racine],
+                                  stdout=subprocess.PIPE, text=True)
+        self.assertEqual(enfant.stdout.readline().strip(), 'tenu')
+        return enfant
+
+    def test_autre_processus_actif_jamais_vole(self):
+        enfant = self.lancer_enfant()   # bat toutes les 5 s (valeur réelle dans l'enfant)
+        try:
+            time.sleep(1.0)              # plus que ABANDON côté parent... mais l'enfant bat : 5 s réels
+            with self.assertRaises(d.PackNonApplique):
+                d.ABANDON = 30
+                d.ecrire_pack(pack(), self.racine)
+            self.assertEqual(etat(self.racine), ANCIEN)
+        finally:
+            enfant.kill()
+            enfant.wait()
+            enfant.stdout.close()
+
+    def test_processus_tue_sans_finally_puis_reprise(self):
+        enfant = self.lancer_enfant()
+        enfant.send_signal(signal.SIGKILL)   # pas de finally : le verrou reste
+        enfant.wait()
+        enfant.stdout.close()
+        self.assertTrue(os.path.exists(self.fichier))
+        d.ecrire_pack(pack(), self.racine)   # processus disparu : repris aussitôt, sans attendre
+        self.assertEqual(etat(self.racine), NOUVEAU)
+        self.sans_residu()
+
+    def test_pid_present_sans_battement_puis_abandon(self):
+        dormeur = subprocess.Popen(['sleep', '30'])   # un processus vivant, sans rapport : PID « réutilisé »
+        try:
+            self.poser_verrou(pid=dormeur.pid)
+            with self.assertRaises(d.PackNonApplique):   # PID présent + battement récent : on ne vole pas
+                d.ecrire_pack(pack(), self.racine)
+            _, battement = d.horloge_demarrage()
+            self.poser_verrou(pid=dormeur.pid, battement=battement - 10)
+            d.ecrire_pack(pack(), self.racine)            # plus de battement : abandonné
+            self.assertEqual(etat(self.racine), NOUVEAU)
+        finally:
+            dormeur.kill()
+            dormeur.wait()
+
+    def test_meme_pid_operation_absente(self):
+        _, battement = d.horloge_demarrage()
+        self.poser_verrou(pid=os.getpid(), battement=battement - 10)   # même Kodi, opération morte
+        d.ecrire_pack(pack(), self.racine)
+        self.assertEqual(etat(self.racine), NOUVEAU)
+
+    def test_meme_pid_operation_vivante(self):
+        self.poser_verrou(pid=os.getpid())   # même Kodi, battement récent : peut-être actif
+        with self.assertRaises(d.PackNonApplique):
+            d.ecrire_pack(pack(), self.racine)
+        self.assertEqual(etat(self.racine), ANCIEN)
+
+    def test_pid_reutilise_apres_redemarrage(self):
+        self.poser_verrou(pid=os.getpid(), demarrage='ancien-demarrage')
+        d.ecrire_pack(pack(), self.racine)
+        self.assertEqual(etat(self.racine), NOUVEAU)
+
+    def test_horloges_non_comparables_jamais_vole(self):
+        self.poser_verrou(demarrage='', battement=0)   # écrit sans horloge de démarrage
+        with self.assertRaises(d.PackNonApplique):
+            d.ecrire_pack(pack(), self.racine)
+
+    def test_erreur_en_ecrivant_le_verrou_ne_bloque_pas(self):
+        vrai = os.replace
+
+        def remplacer(source, cible):
+            if cible == self.fichier:
+                raise OSError(errno.ENOSPC, 'plein')
+            return vrai(source, cible)
+        os.replace = remplacer
+        try:
+            with self.assertRaises(d.PackNonApplique):
+                d.ecrire_pack(pack(), self.racine)
+        finally:
+            os.replace = vrai
+        self.assertEqual([f for f in os.listdir(os.path.dirname(self.fichier)) if f.startswith('verrou')], [])
+        d.ecrire_pack(pack(), self.racine)   # aussitôt après : pas de blocage
+        self.assertEqual(etat(self.racine), NOUVEAU)
+
+    def test_verrou_vide(self):
+        poser(self.racine, {'script.dark-prophet/verrou': b''})
+        with self.assertRaises(d.PackNonApplique):   # tout juste créé : peut-être en cours d'écriture
+            d.ecrire_pack(pack(), self.racine)
+        ancien = time.time() - 5
+        os.utime(self.fichier, (ancien, ancien))
+        d.ecrire_pack(pack(), self.racine)            # vide depuis longtemps : abandonné
+        self.assertEqual(etat(self.racine), NOUVEAU)
+
+    def test_ne_retire_pas_le_verrou_d_un_autre(self):
+        with d.verrou(self.racine):
+            self.poser_verrou(id='repreneur')   # jugé abandonné et repris par un autre entre-temps
+            time.sleep(0.2)                     # le battement ne doit pas l'écraser
+            self.assertEqual(json.load(open(self.fichier))['id'], 'repreneur')
+        self.assertEqual(json.load(open(self.fichier))['id'], 'repreneur')   # pas retiré à la sortie
+
+    def interrompre(self, racine):
+        vrai = os.replace
+
+        def remplacer(source, cible):
+            if source.endswith(os.path.join('nouveau', SKIN)):
+                raise Coupure(source)
+            return vrai(source, cible)
+        os.replace = remplacer
+        try:
+            d.ecrire_pack(pack(), racine)
+        except Coupure:
+            pass
+        finally:
+            os.replace = vrai
+
+    def test_transaction_incomplete_et_verrou_abandonne(self):
+        self.interrompre(self.racine)
+        _, battement = d.horloge_demarrage()
+        self.poser_verrou(battement=battement - 10)
+        xbmc.habillage = 'skin.estuary'
+        d.reprendre_au_demarrage()
+        self.assertEqual(etat(self.racine), NOUVEAU)
+        self.assertFalse(os.path.exists(self.fichier))
+        self.sans_residu()
+
+    def test_transaction_incomplete_et_verrou_actif(self):
+        self.interrompre(self.racine)
+        self.poser_verrou()
+        avant = etat(self.racine)
+        xbmc.habillage = 'skin.estuary'
+        d.reprendre_au_demarrage()   # service : reporte sans rien toucher
+        with self.assertRaises(d.PackNonApplique):
+            d.ecrire_pack(pack(ANCIEN), self.racine)   # assistant : refus clair
+        self.assertEqual(etat(self.racine), avant)
+        self.assertTrue(d.transaction_en_attente(self.racine))
+
+    def test_plusieurs_profils_independants(self):
+        autre = os.path.join(self.racine, 'profiles', 'Catch-up TV', 'addon_data')
+        poser(autre, ANCIEN)
+        self.poser_verrou()   # profil principal occupé
+        d.ecrire_pack(pack(), autre)   # l'autre profil n'est pas bloqué
+        self.assertEqual(etat(autre), NOUVEAU)
+        with self.assertRaises(d.PackNonApplique):
+            d.ecrire_pack(pack(), self.racine)
+
+    def test_service_et_assistant_en_meme_temps(self):
+        self.interrompre(self.racine)
+        _, battement = d.horloge_demarrage()
+        self.poser_verrou(battement=battement - 10)
+        xbmc.habillage = 'skin.estuary'
+        d.changer_habillage = lambda skin: True
+        depart = threading.Barrier(2)
+
+        def service():
+            depart.wait()
+            d.reprendre_au_demarrage()
+
+        def assistant():
+            depart.wait()
+            d.reprendre_au_lancement()
+        fils = [threading.Thread(target=service), threading.Thread(target=assistant)]
+        for f in fils:
+            f.start()
+        for f in fils:
+            f.join()
+        self.assertEqual(etat(self.racine), NOUVEAU)
+        self.sans_residu()
+        self.assertFalse(os.path.exists(self.fichier))
 
 
 if __name__ == '__main__':

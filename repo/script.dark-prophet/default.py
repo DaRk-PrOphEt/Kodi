@@ -789,47 +789,147 @@ def reprendre(racine):
 
 
 OCCUPE = ("Une autre opération de DaRk-PrOphEt est en cours sur ce profil.[CR]"
-          "Attends qu'elle se termine (ou redémarre Kodi), puis relance. Rien n'a été modifié.")
+          "Attends qu'elle se termine (deux minutes au plus si elle a été interrompue), puis relance. "
+          "Rien n'a été modifié.")
+# Le verrou d'un profil est « vivant » tant que son opération réécrit son battement (toutes les
+# BATTEMENT secondes, par un fil à part). Sans battement depuis ABANDON secondes, ou après un
+# redémarrage de l'appareil, il est abandonné (opération tuée, Kodi arrêté) et peut être repris.
+BATTEMENT = 5
+ABANDON = 120
+# Verrou resté vide : son créateur est mort entre la création et l'écriture (un instant en temps normal).
+ABANDON_VIDE = 30
+
+
+def horloge_demarrage():
+    """(identifiant du démarrage de l'appareil, secondes depuis ce démarrage) : insensible aux
+    changements d'heure et comparable entre processus. Ailleurs que sous Linux/Android : ('', heure)."""
+    try:
+        with open('/proc/sys/kernel/random/boot_id') as source:
+            demarrage = source.read().strip()
+        return demarrage, time.clock_gettime(time.CLOCK_BOOTTIME)
+    except (OSError, AttributeError, ValueError):
+        return '', time.time()
+
+
+def verrou_abandonne(fichier):
+    """True si le verrou a manifestement perdu son opération, False s'il est (ou peut être) actif."""
+    try:
+        with open(fichier) as source:
+            contenu = source.read()
+        age_fichier = time.time() - os.path.getmtime(fichier)
+    except OSError:
+        return False   # disparu ou illisible à l'instant : on réessaie plutôt que de deviner
+    try:
+        detenteur = json.loads(contenu)
+        demarrage, battement = detenteur['demarrage'], float(detenteur['battement'])
+    except (ValueError, KeyError, TypeError):
+        # Vide ou incomplet : l'opération a été tuée entre la création et l'écriture (quelques
+        # microsecondes), sauf s'il vient d'être créé.
+        return age_fichier > ABANDON_VIDE
+    actuel, maintenant = horloge_demarrage()
+    if demarrage and actuel and demarrage != actuel:
+        return True   # l'appareil a redémarré depuis
+    if demarrage != actuel:
+        return False  # horloges non comparables : prudence
+    # Même démarrage : un processus disparu ne peut plus rien faire (un numéro encore présent,
+    # lui, ne prouve rien : il peut avoir été réutilisé ; c'est alors le battement qui décide).
+    if demarrage and os.path.isdir('/proc/self') and not os.path.exists('/proc/%s' % detenteur.get('pid')):
+        return True
+    ecart = maintenant - battement
+    return ecart > ABANDON   # écart négatif (heure reculée, sans horloge de démarrage) : on ne vole pas
+
+
+def ecrire_verrou(fichier, contenu):
+    provisoire = '%s.%s' % (fichier, contenu['id'])
+    with open(provisoire, 'w') as sortie:
+        json.dump(contenu, sortie)
+    os.replace(provisoire, fichier)
+
+
+def proprietaire_du_verrou(fichier):
+    try:
+        with open(fichier) as source:
+            return json.load(source).get('id')
+    except (OSError, ValueError, AttributeError):
+        return None
 
 
 @contextlib.contextmanager
 def verrou(racine):
-    """Un seul lancement à la fois touche aux réglages d'un profil. Le fichier note le
-    processus de Kodi : laissé par un Kodi arrêté depuis (numéro différent), il est repris.
-    Lève PackNonApplique si le profil est occupé."""
+    """Un seul lancement à la fois touche aux réglages d'un profil (assistant, service,
+    deux assistants). Le verrou porte un identifiant d'opération ; seule cette opération
+    le retire. Un verrou abandonné (voir verrou_abandonne) est repris ; dans le doute,
+    on refuse : lève PackNonApplique sans rien modifier."""
     dossier = os.path.join(racine, 'script.dark-prophet')
     fichier = os.path.join(dossier, 'verrou')
+    identifiant = '%032x' % random.SystemRandom().getrandbits(128)
+    cree = False
     try:
         os.makedirs(dossier, exist_ok=True)
-        for _ in range(2):
+        for _ in range(3):
             try:
                 fd = os.open(fichier, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 break
             except FileExistsError:
+                if not verrou_abandonne(fichier):
+                    raise PackNonApplique(OCCUPE)
+                abandonne = '%s.abandonne.%s' % (fichier, identifiant)
                 try:
-                    with open(fichier) as source:
-                        proprietaire = source.read().strip()
-                    recent = time.time() - os.path.getmtime(fichier) < 60
+                    os.replace(fichier, abandonne)   # un seul repreneur gagne ce renommage
                 except OSError:
                     continue
-                if proprietaire == str(os.getpid()) or (not proprietaire and recent):
+                if not verrou_abandonne(abandonne):
+                    # Entre la vérification et le renommage, un autre a pris le verrou : on le lui rend.
+                    try:
+                        os.link(abandonne, fichier)
+                        os.remove(abandonne)
+                    except OSError as erreur:
+                        log('verrou repris par erreur, laissé de côté : %r' % erreur)
                     raise PackNonApplique(OCCUPE)
-                os.remove(fichier)
+                log('verrou abandonné repris dans %s' % racine)
+                os.remove(abandonne)
         else:
             raise PackNonApplique(OCCUPE)
-        os.write(fd, str(os.getpid()).encode())
+        cree = True
         os.close(fd)
+        demarrage, battement = horloge_demarrage()
+        contenu = {'id': identifiant, 'pid': os.getpid(), 'demarrage': demarrage, 'battement': battement}
+        ecrire_verrou(fichier, contenu)
     except OSError as erreur:
         log('verrou impossible dans %s : %r' % (racine, erreur))
+        if cree and proprietaire_du_verrou(fichier) in (None, identifiant):
+            for reste in (fichier, '%s.%s' % (fichier, identifiant)):   # le nôtre, vide ou complet
+                try:
+                    os.remove(reste)
+                except OSError:
+                    pass
         raise PackNonApplique("Les réglages de ce profil ne sont pas modifiables (%s).[CR]"
                               "Rien n'a été modifié." % cause(erreur))
+    fin = threading.Event()
+
+    def battre():
+        while not fin.wait(BATTEMENT):
+            if proprietaire_du_verrou(fichier) != identifiant:
+                return   # verrou perdu (jugé abandonné) : ne pas écraser celui d'un autre
+            try:
+                ecrire_verrou(fichier, dict(contenu, battement=horloge_demarrage()[1]))
+            except OSError as erreur:
+                log('battement du verrou : %r' % erreur)
+
+    battant = threading.Thread(target=battre, daemon=True)
+    battant.start()
     try:
         yield
     finally:
-        try:
-            os.remove(fichier)
-        except OSError as erreur:
-            log('verrou non retiré : %r' % erreur)
+        fin.set()
+        battant.join(BATTEMENT + 1)
+        if proprietaire_du_verrou(fichier) == identifiant:
+            try:
+                os.remove(fichier)
+            except OSError as erreur:
+                log('verrou non retiré : %r' % erreur)
+        else:
+            log('verrou d\'une autre opération laissé en place dans %s' % racine)
 
 
 def remplacer_dossiers(racine, preparer, attendu):
