@@ -7,12 +7,14 @@ import random
 import re
 import shutil
 import sqlite3
+import stat
 import struct
 import sys
 import threading
 import time
 import zlib
 import zipfile
+from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from io import BytesIO
 from urllib.error import HTTPError, URLError
@@ -78,6 +80,13 @@ PACK_ALKOFLIX = 'arctic-fuse-3.zip'
 # Même interface avec moins de rangées par page, pour les boîtiers modestes.
 PACK_LEGER = 'arctic-fuse-3-leger.zip'
 PACK_CATCHUP = 'arctic-fuse-3-catchup.zip'
+# Limites d'un pack : les vrais font environ 12 Ko compressés, 45 Ko décompressés, 14 fichiers.
+# Large marge, mais un fichier détourné ne peut pas saturer la mémoire ni le stockage d'un boîtier modeste.
+PACK_MAX_TELECHARGE = 5 * 1024 * 1024   # octets reçus
+PACK_MAX_ENTREE = 5 * 1024 * 1024       # un fichier décompressé
+PACK_MAX_TOTAL = 20 * 1024 * 1024       # tous les fichiers décompressés
+PACK_MAX_ENTREES = 500
+
 
 # Les deux entrées de l'écran de choix au démarrage (formule alkoFlix + Catch-up TV).
 PROFIL_ALKOFLIX = 'alkoFlix'
@@ -435,19 +444,79 @@ def changer_habillage(skin):
     return False
 
 
+def verifier_pack(archive):
+    """Contrôle un pack AVANT toute écriture sur l'appareil. Renvoie None s'il est
+    utilisable, sinon la raison du refus. Lève zipfile.BadZipFile si une entrée est corrompue."""
+    entrees = archive.infolist()
+    if not entrees:
+        return 'archive vide'
+    if len(entrees) > PACK_MAX_ENTREES:
+        return 'trop de fichiers (%d)' % len(entrees)
+    total, vus, fichiers = 0, set(), set()
+    for info in entrees:
+        morceaux = morceaux_surs(info.filename)
+        if morceaux is None:
+            return 'chemin dangereux : %r' % info.filename
+        if est_un_lien(info):
+            return 'lien symbolique : %s' % info.filename
+        # Deux entrées au même endroit (la casse ne compte pas sur Windows et en FAT) : ambigu.
+        cle = '/'.join(morceaux).lower()
+        if cle in vus:
+            return 'entrée en double : %s' % info.filename
+        vus.add(cle)
+        if not info.is_dir():
+            fichiers.add(cle)
+        if info.file_size > PACK_MAX_ENTREE:
+            return '%s est trop gros (%d octets)' % (info.filename, info.file_size)
+        total += info.file_size
+    if total > PACK_MAX_TOTAL:
+        return 'contenu trop gros (%d octets)' % total
+    for cle in vus:   # un fichier ne peut pas servir aussi de dossier à une autre entrée
+        morceaux = cle.split('/')
+        if any('/'.join(morceaux[:i]) in fichiers for i in range(1, len(morceaux))):
+            return 'fichier et dossier au même nom : %s' % cle
+    membres = {info.filename.replace('\\', '/'): info for info, _ in membres_autorises(archive, ADDON_DATA)}
+    essentiel = 'addon_data/%s/settings.xml' % SKIN
+    if essentiel not in membres:
+        return 'réglages de l\'habillage absents'
+    # Tailles déjà bornées : la lecture complète (CRC compris) ne peut plus saturer la mémoire.
+    try:
+        mauvais = archive.testzip()
+    except (zlib.error, NotImplementedError, RuntimeError, EOFError) as erreur:
+        raise zipfile.BadZipFile('lecture impossible : %r' % erreur)
+    if mauvais:
+        raise zipfile.BadZipFile('entrée corrompue : %s' % mauvais)
+    for nom, info in membres.items():
+        try:
+            if nom == essentiel:
+                if ElementTree.fromstring(archive.read(info)).tag != 'settings':
+                    return '%s : racine inattendue' % nom
+            elif nom.endswith('.json'):
+                json.loads(archive.read(info))
+        except (ElementTree.ParseError, ValueError):
+            return '%s : contenu illisible' % nom
+    return None
+
+
 def telecharger_pack(nom, muet=False):
-    """Renvoie l'archive, ou None (pack pas encore publié, ou réseau en panne)."""
+    """Renvoie l'archive vérifiée, ou None (pack pas encore publié, réseau en panne,
+    pack inutilisable). Rien n'est écrit sur l'appareil ici."""
     try:
         with urlopen(PACKS_URL + nom, timeout=30) as reponse:
-            archive = zipfile.ZipFile(BytesIO(reponse.read()))
-        if any(membres_autorises(archive, ADDON_DATA)):
+            donnees = reponse.read(PACK_MAX_TELECHARGE + 1)
+        if len(donnees) > PACK_MAX_TELECHARGE:
+            log('pack %s trop gros, refusé' % nom)
+            return None
+        archive = zipfile.ZipFile(BytesIO(donnees))
+        raison = verifier_pack(archive)
+        if raison is None:
             return archive
-        log('pack %s sans réglage utilisable' % nom)
+        log('pack %s refusé : %s' % (nom, raison))
     except HTTPError as erreur:
         log('pack %s : erreur %s' % (nom, erreur.code))
         if not muet and erreur.code != 404:
             dialog.ok(TITRE, 'Téléchargement refusé (erreur %s).' % erreur.code)
-    except (URLError, OSError, zipfile.BadZipFile) as erreur:
+    except (URLError, OSError, HTTPException, zipfile.BadZipFile) as erreur:
         log('pack %s : %r' % (nom, erreur))
         if not muet:
             dialog.ok(TITRE, 'Téléchargement impossible. Vérifie la connexion puis relance.')
@@ -493,11 +562,37 @@ def telecharger_pack_alkoflix(version):
     return telecharger_pack(PACK_ALKOFLIX)
 
 
+# Interdits dans un nom de fichier sous Windows (et sur les cartes en FAT/exFAT).
+CARACTERES_INTERDITS = set('<>:"|?*')
+NOMS_RESERVES = {'CON', 'PRN', 'AUX', 'NUL'} | {'%s%d' % (n, i) for n in ('COM', 'LPT') for i in range(1, 10)}
+
+
+def morceaux_surs(nom):
+    """Découpe le chemin d'une entrée de zip. None s'il est dangereux ou impossible à
+    écrire sur certains appareils : absolu, « . » ou « .. », morceau vide, caractère de
+    contrôle ou interdit par Windows, nom réservé (CON, NUL…), point ou espace final."""
+    nom = nom.replace('\\', '/')
+    if nom.startswith('/'):
+        return None
+    morceaux = nom[:-1].split('/') if nom.endswith('/') else nom.split('/')   # « / » final : un dossier
+    for morceau in morceaux:
+        if (morceau in ('', '.', '..') or morceau != morceau.rstrip('. ')
+                or any(c in CARACTERES_INTERDITS or ord(c) < 32 for c in morceau)
+                or morceau.split('.')[0].upper() in NOMS_RESERVES):
+            return None
+    return morceaux
+
+
+def est_un_lien(info):
+    return stat.S_ISLNK(info.external_attr >> 16)
+
+
 def membres_autorises(archive, racine):
-    """Fichiers du pack qu'on accepte d'écrire : addon_data/<dossier connu>/..."""
+    """Fichiers du pack qu'on accepte d'écrire : addon_data/<dossier connu>/...
+    Mêmes règles de chemin que verifier_pack (morceaux_surs)."""
     for info in archive.infolist():
-        morceaux = info.filename.replace('\\', '/').split('/')
-        if info.is_dir() or len(morceaux) < 3 or '..' in morceaux:
+        morceaux = morceaux_surs(info.filename)
+        if info.is_dir() or est_un_lien(info) or not morceaux or len(morceaux) < 3:
             continue
         if morceaux[0] != 'addon_data' or morceaux[1] not in DOSSIERS:
             continue
@@ -680,9 +775,12 @@ def telecharger_fond(fichier):
     cible = os.path.join(DOSSIER_FONDS, fichier)
     try:
         os.makedirs(DOSSIER_FONDS, exist_ok=True)
-        with urlopen(PACKS_URL + 'fonds/' + fichier, timeout=30) as reponse, open(cible, 'wb') as sortie:
-            shutil.copyfileobj(reponse, sortie)
-    except (URLError, OSError) as erreur:
+        # Reçu en entier avant d'ouvrir le fichier : une coupure ne laisse pas une image tronquée à la place de l'ancienne.
+        with urlopen(PACKS_URL + 'fonds/' + fichier, timeout=30) as reponse:
+            donnees = reponse.read()
+        with open(cible, 'wb') as sortie:
+            sortie.write(donnees)
+    except (URLError, OSError, HTTPException) as erreur:
         log('fond %s : %r' % (fichier, erreur))
         return cible if os.path.isfile(cible) else None
     return cible
@@ -747,11 +845,13 @@ def poser_images_habillage(telecharger=True):
     try:
         if telecharger:
             os.makedirs(DOSSIER_IMAGES, exist_ok=True)
-            with urlopen(PACKS_URL + 'images/' + IMAGE_PLUS, timeout=30) as reponse, open(copie, 'wb') as sortie:
-                shutil.copyfileobj(reponse, sortie)
+            with urlopen(PACKS_URL + 'images/' + IMAGE_PLUS, timeout=30) as reponse:
+                donnees = reponse.read()
+            with open(copie, 'wb') as sortie:
+                sortie.write(donnees)
         if os.path.isfile(copie):
             remplacer_dans_habillage(PLUS_ORIGINE, PLUS_REMPLACEE)
-    except (URLError, OSError) as erreur:
+    except (URLError, OSError, HTTPException) as erreur:
         log('image « Plus » : %r' % erreur)
 
 
