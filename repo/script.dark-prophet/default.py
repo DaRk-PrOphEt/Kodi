@@ -325,7 +325,11 @@ def installer_tout(addon_ids):
                 if addon_id in FACULTATIFS:
                     log('%s non installé, on continue' % addon_id)
                     continue
-                dialog.ok(TITRE, "%s n'a pas pu être installé.[CR]Vérifie la connexion et que Kodi est en version 21 ou plus, puis relance." % NOMS[addon_id])
+                if addon_id == SKIN:
+                    dialog.ok(TITRE, "Arctic Fuse 3 n'a pas pu être installé.[CR]Son dépôt ne propose peut-être pas de version "
+                                     "pour ce Kodi (Kodi 21 « Omega » conseillé), ou la connexion a coupé. L'habillage actuel n'a pas changé.")
+                else:
+                    dialog.ok(TITRE, "%s n'a pas pu être installé.[CR]Vérifie la connexion et que Kodi est en version 21 ou plus, puis relance." % NOMS[addon_id])
                 return False
     finally:
         progression.close()
@@ -789,11 +793,14 @@ def reprendre(racine):
 
 
 OCCUPE = ("Une autre opération de DaRk-PrOphEt est en cours sur ce profil.[CR]"
-          "Attends qu'elle se termine (deux minutes au plus si elle a été interrompue), puis relance. "
+          "Attends qu'elle se termine, puis relance. Si ce message revient, redémarre Kodi. "
           "Rien n'a été modifié.")
-# Le verrou d'un profil est « vivant » tant que son opération réécrit son battement (toutes les
-# BATTEMENT secondes, par un fil à part). Sans battement depuis ABANDON secondes, ou après un
-# redémarrage de l'appareil, il est abandonné (opération tuée, Kodi arrêté) et peut être repris.
+# Le verrou d'un profil désigne son opération (identifiant) et le processus qui la mène (numéro et
+# heure de départ, lus dans /proc). Il n'est repris que sur preuve que l'opération ne peut plus
+# rien faire : appareil redémarré, ou ce processus précis disparu. Un processus encore là n'est
+# jamais dépossédé, même figé (veille, stockage lent) : un délai ne prouve rien.
+# Sans /proc (Windows, macOS…), seul reste le battement : réécrit toutes les BATTEMENT secondes
+# par un fil à part, le verrou est jugé abandonné sans battement depuis ABANDON secondes.
 BATTEMENT = 5
 ABANDON = 120
 # Verrou resté vide : son créateur est mort entre la création et l'écriture (un instant en temps normal).
@@ -811,32 +818,45 @@ def horloge_demarrage():
         return '', time.time()
 
 
-def verrou_abandonne(fichier):
-    """True si le verrou a manifestement perdu son opération, False s'il est (ou peut être) actif."""
+def empreinte_processus(pid):
+    """Heure de départ du processus `pid` (lue dans /proc) : avec son numéro, elle désigne ce
+    processus précis, même si le numéro est réutilisé ensuite. '' s'il n'existe plus ; None si
+    on ne peut pas le savoir (pas de /proc, accès refusé, format inattendu)."""
     try:
-        with open(fichier) as source:
-            contenu = source.read()
-        age_fichier = time.time() - os.path.getmtime(fichier)
-    except OSError:
-        return False   # disparu ou illisible à l'instant : on réessaie plutôt que de deviner
+        with open('/proc/%d/stat' % int(pid)) as source:
+            return source.read().rsplit(')', 1)[1].split()[19]
+    except FileNotFoundError:
+        return '' if os.path.isfile('/proc/self/stat') else None
+    except (OSError, IndexError, ValueError, TypeError):
+        return None
+
+
+def etat_verrou(fichier):
+    """(abandonné ?, identifiant de son opération ou None s'il est vide). Abandonné seulement
+    sur preuve ; dans le doute, False. Lève OSError s'il a disparu ou est illisible."""
+    with open(fichier) as source:
+        contenu = source.read()
+    age_fichier = time.time() - os.path.getmtime(fichier)
     try:
         detenteur = json.loads(contenu)
-        demarrage, battement = detenteur['demarrage'], float(detenteur['battement'])
+        identifiant, demarrage, battement = detenteur['id'], detenteur['demarrage'], float(detenteur['battement'])
     except (ValueError, KeyError, TypeError):
         # Vide ou incomplet : l'opération a été tuée entre la création et l'écriture (quelques
         # microsecondes), sauf s'il vient d'être créé.
-        return age_fichier > ABANDON_VIDE
+        return age_fichier > ABANDON_VIDE, None
     actuel, maintenant = horloge_demarrage()
     if demarrage and actuel and demarrage != actuel:
-        return True   # l'appareil a redémarré depuis
+        return True, identifiant   # l'appareil a redémarré depuis
+    processus = detenteur.get('processus')
+    present = empreinte_processus(detenteur.get('pid')) if processus else None
+    if present is not None:
+        return present != processus, identifiant
+    # Sans /proc : le battement décide.
     if demarrage != actuel:
-        return False  # horloges non comparables : prudence
-    # Même démarrage : un processus disparu ne peut plus rien faire (un numéro encore présent,
-    # lui, ne prouve rien : il peut avoir été réutilisé ; c'est alors le battement qui décide).
+        return False, identifiant  # horloges non comparables : prudence
     if demarrage and os.path.isdir('/proc/self') and not os.path.exists('/proc/%s' % detenteur.get('pid')):
-        return True
-    ecart = maintenant - battement
-    return ecart > ABANDON   # écart négatif (heure reculée, sans horloge de démarrage) : on ne vole pas
+        return True, identifiant
+    return maintenant - battement > ABANDON, identifiant   # écart négatif (heure reculée) : on ne vole pas
 
 
 def ecrire_verrou(fichier, contenu):
@@ -854,11 +874,43 @@ def proprietaire_du_verrou(fichier):
         return None
 
 
+def reprendre_verrou(fichier, abandonne, contenu):
+    """Remplace d'un coup le verrou abandonné `abandonne` (son identifiant, None s'il est vide)
+    par `contenu`. Une marque propre à ce verrou-là ne laisse passer qu'un repreneur, qui le relit
+    sous la marque : s'il a changé entre-temps, il n'y touche pas. Le verrou n'est jamais retiré
+    ni déplacé : personne ne peut prendre sa place pendant la reprise. True si repris."""
+    marque = '%s.reprise.%s' % (fichier, abandonne or 'vide')
+    try:
+        fd = os.open(marque, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        try:
+            if etat_verrou(marque)[0]:
+                os.remove(marque)   # repreneur mort pendant sa reprise : la suivante pourra se faire
+        except OSError:
+            pass
+        return False
+    try:
+        with os.fdopen(fd, 'w') as sortie:
+            json.dump(contenu, sortie)
+        try:
+            if etat_verrou(fichier) != (True, abandonne):
+                return False
+        except OSError:
+            return False
+        ecrire_verrou(fichier, contenu)
+        return True
+    finally:
+        try:
+            os.remove(marque)
+        except OSError:
+            pass
+
+
 @contextlib.contextmanager
 def verrou(racine):
     """Un seul lancement à la fois touche aux réglages d'un profil (assistant, service,
     deux assistants). Le verrou porte un identifiant d'opération ; seule cette opération
-    le retire. Un verrou abandonné (voir verrou_abandonne) est repris ; dans le doute,
+    le retire. Un verrou abandonné (voir etat_verrou) est repris ; dans le doute,
     on refuse : lève PackNonApplique sans rien modifier."""
     dossier = os.path.join(racine, 'script.dark-prophet')
     fichier = os.path.join(dossier, 'verrou')
@@ -866,43 +918,40 @@ def verrou(racine):
     cree = False
     try:
         os.makedirs(dossier, exist_ok=True)
+        demarrage, battement = horloge_demarrage()
+        contenu = {'id': identifiant, 'pid': os.getpid(), 'processus': empreinte_processus(os.getpid()),
+                   'demarrage': demarrage, 'battement': battement}
         for _ in range(3):
             try:
                 fd = os.open(fichier, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                break
             except FileExistsError:
-                if not verrou_abandonne(fichier):
-                    raise PackNonApplique(OCCUPE)
-                abandonne = '%s.abandonne.%s' % (fichier, identifiant)
                 try:
-                    os.replace(fichier, abandonne)   # un seul repreneur gagne ce renommage
+                    abandonne, ancien = etat_verrou(fichier)
                 except OSError:
-                    continue
-                if not verrou_abandonne(abandonne):
-                    # Entre la vérification et le renommage, un autre a pris le verrou : on le lui rend.
-                    try:
-                        os.link(abandonne, fichier)
-                        os.remove(abandonne)
-                    except OSError as erreur:
-                        log('verrou repris par erreur, laissé de côté : %r' % erreur)
+                    continue   # retiré à l'instant (fin de l'autre opération) : on réessaie
+                if not abandonne:
                     raise PackNonApplique(OCCUPE)
-                log('verrou abandonné repris dans %s' % racine)
-                os.remove(abandonne)
+                if reprendre_verrou(fichier, ancien, contenu):
+                    log('verrou abandonné repris dans %s' % racine)
+                    cree = True
+                    break
+                continue
+            cree = True
+            os.close(fd)
+            ecrire_verrou(fichier, contenu)
+            break
         else:
             raise PackNonApplique(OCCUPE)
-        cree = True
-        os.close(fd)
-        demarrage, battement = horloge_demarrage()
-        contenu = {'id': identifiant, 'pid': os.getpid(), 'demarrage': demarrage, 'battement': battement}
-        ecrire_verrou(fichier, contenu)
     except OSError as erreur:
         log('verrou impossible dans %s : %r' % (racine, erreur))
+        restes = ['%s.%s' % (fichier, identifiant)]
         if cree and proprietaire_du_verrou(fichier) in (None, identifiant):
-            for reste in (fichier, '%s.%s' % (fichier, identifiant)):   # le nôtre, vide ou complet
-                try:
-                    os.remove(reste)
-                except OSError:
-                    pass
+            restes.append(fichier)   # le nôtre, vide ou complet
+        for reste in restes:
+            try:
+                os.remove(reste)
+            except OSError:
+                pass
         raise PackNonApplique("Les réglages de ce profil ne sont pas modifiables (%s).[CR]"
                               "Rien n'a été modifié." % cause(erreur))
     fin = threading.Event()
@@ -1678,6 +1727,9 @@ def formule_alkoflix():
         return
     noter_etat_avant()
     if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES) + ((VSTREAM, DNS, INTRO) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):
+        # Jamais de bascule d'office : on propose l'Extra-Light, qui n'a pas besoin d'Arctic Fuse 3.
+        if not installe(SKIN) and dialog.yesno(TITRE, "Installer plutôt la version Extra-Light ?[CR]alkoFlix avec l'habillage d'origine de Kodi (Estuary), sans Arctic Fuse 3."):
+            formule_extra()
         return
     franciser()
     regler_confort()
