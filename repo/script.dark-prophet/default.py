@@ -642,6 +642,22 @@ def place_libre(chemin):
         return None
 
 
+# Place prise par Arctic Fuse 3 et ses extensions sur un Kodi neuf, ZIP compris (Kodi garde chaque
+# ZIP dans addons/packages) : mesuré le 17/11/2026 sur Kodi 21.3, 909 Mo en Base, 930 Mo en Full.
+BESOIN_ARCTIC = 950 * 1000 * 1000
+
+
+def place_manquante_arctic():
+    """Mo libres si l'appareil n'a manifestement pas la place d'installer Arctic Fuse 3, sinon
+    None (déjà installé, place suffisante, ou espace libre inconnu : on n'empêche rien)."""
+    if installe(SKIN):
+        return None
+    libre = place_libre(xbmcvfs.translatePath('special://home/addons/'))
+    if libre is None or libre >= BESOIN_ARCTIC:
+        return None
+    return libre // (1000 * 1000)
+
+
 def verifier_place(chemin, octets):
     """Refuse AVANT toute écriture s'il manque de la place. Si l'appareil ne donne pas
     l'espace libre, on continue : rien n'est supprimé avant que la copie soit complète,
@@ -720,9 +736,10 @@ def chemins_du_dossier(racine, transaction, dossier):
             os.path.join(transaction, 'ancien', dossier))
 
 
-def basculer(racine, transaction):
+def basculer(racine, transaction, garde=lambda: None):
     """Met les dossiers préparés en place. Chaque pas peut être rejoué après une coupure."""
     for dossier in DOSSIERS:
+        garde()
         actuel, nouveau, ancien = chemins_du_dossier(racine, transaction, dossier)
         if os.path.isdir(nouveau):
             if os.path.lexists(actuel):
@@ -831,19 +848,56 @@ def empreinte_processus(pid):
         return None
 
 
-def etat_verrou(fichier):
-    """(abandonné ?, identifiant de son opération ou None s'il est vide). Abandonné seulement
-    sur preuve ; dans le doute, False. Lève OSError s'il a disparu ou est illisible."""
-    with open(fichier) as source:
+def candidats_vivants(fichier, sauf, avant_ns):
+    """Nombre d'opérations en train de prendre ce verrou dont le processus existe encore : chacune
+    dépose un fichier « candidat » portant son identité AVANT de créer le verrou ou une marque.
+    Seuls comptent les candidats déposés au plus tard à `avant_ns` (date du fichier resté vide) :
+    les suivants ne peuvent pas l'avoir créé. Les candidats d'un processus disparu, ou d'un autre
+    démarrage de l'appareil, sont effacés."""
+    dossier, nom = os.path.split(fichier)
+    actuel = horloge_demarrage()[0]
+    vivants = 0
+    for entree in os.listdir(dossier):
+        if not entree.startswith(nom + '.candidat.') or entree == '%s.candidat.%s' % (nom, sauf):
+            continue
+        chemin = os.path.join(dossier, entree)
+        try:
+            if os.stat(chemin).st_mtime_ns > avant_ns:
+                continue
+            with open(chemin) as source:
+                candidat = json.load(source)
+            processus, demarrage = candidat['processus'], candidat['demarrage']
+        except (OSError, ValueError, KeyError, TypeError):
+            continue   # en cours d'écriture : son auteur n'a pas encore créé de verrou
+        present = empreinte_processus(candidat.get('pid'))
+        if (demarrage and actuel and demarrage != actuel) or (present is not None and present != processus):
+            try:
+                os.remove(chemin)
+            except OSError:
+                pass
+        else:
+            vivants += 1
+    return vivants
+
+
+def etat_verrou(chemin, principal, sauf):
+    """(abandonné ?, identité). Abandonné seulement sur preuve ; dans le doute, False. L'identité
+    est l'identifiant de l'opération, ou « vide-<inode> » pour un verrou pas encore écrit.
+    principal : le verrou dont dépendent les candidats ; sauf : notre propre identifiant.
+    Lève OSError s'il a disparu ou est illisible."""
+    with open(chemin) as source:
         contenu = source.read()
-    age_fichier = time.time() - os.path.getmtime(fichier)
+        infos = os.fstat(source.fileno())
     try:
         detenteur = json.loads(contenu)
         identifiant, demarrage, battement = detenteur['id'], detenteur['demarrage'], float(detenteur['battement'])
     except (ValueError, KeyError, TypeError):
-        # Vide ou incomplet : l'opération a été tuée entre la création et l'écriture (quelques
-        # microsecondes), sauf s'il vient d'être créé.
-        return age_fichier > ABANDON_VIDE, None
+        # Vide ou incomplet : son créateur a été arrêté entre la création et l'écriture. Abandonné
+        # si aucun candidat n'est encore vivant ; sans /proc, si c'est vieux de ABANDON_VIDE.
+        identite = 'vide-%d' % infos.st_ino
+        if empreinte_processus(os.getpid()) is None:
+            return time.time() - infos.st_mtime > ABANDON_VIDE, identite
+        return candidats_vivants(principal, sauf, infos.st_mtime_ns) == 0, identite
     actuel, maintenant = horloge_demarrage()
     if demarrage and actuel and demarrage != actuel:
         return True, identifiant   # l'appareil a redémarré depuis
@@ -874,36 +928,58 @@ def proprietaire_du_verrou(fichier):
         return None
 
 
-def reprendre_verrou(fichier, abandonne, contenu):
-    """Remplace d'un coup le verrou abandonné `abandonne` (son identifiant, None s'il est vide)
-    par `contenu`. Une marque propre à ce verrou-là ne laisse passer qu'un repreneur, qui le relit
-    sous la marque : s'il a changé entre-temps, il n'y touche pas. Le verrou n'est jamais retiré
-    ni déplacé : personne ne peut prendre sa place pendant la reprise. True si repris."""
-    marque = '%s.reprise.%s' % (fichier, abandonne or 'vide')
-    try:
-        fd = os.open(marque, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
+def prendre_marque(fichier, identite, contenu):
+    """Marque exclusive pour reprendre le verrou abandonné `identite`. Si le repreneur qui la
+    tient a disparu, on passe à la suivante, dont le nom est le même pour tous : une seule
+    opération l'obtient. Aucune marque n'est jamais retirée par un concurrent. Renvoie son
+    chemin, ou None si un repreneur vivant est déjà dessus."""
+    marque = '%s.reprise.%s' % (fichier, identite)
+    for _ in range(5):
         try:
-            if etat_verrou(marque)[0]:
-                os.remove(marque)   # repreneur mort pendant sa reprise : la suivante pourra se faire
-        except OSError:
-            pass
-        return False
-    try:
+            fd = os.open(marque, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                abandonne, autre = etat_verrou(marque, fichier, contenu['id'])
+            except OSError:
+                return None   # retirée à l'instant : la reprise vient d'aboutir
+            if not abandonne:
+                return None
+            marque = '%s.%s' % (marque, autre)
+            continue
         with os.fdopen(fd, 'w') as sortie:
             json.dump(contenu, sortie)
+        return marque
+    return None
+
+
+def reprendre_verrou(fichier, identite, contenu):
+    """Remplace d'un coup le verrou abandonné `identite` par `contenu`, sous une marque exclusive
+    (voir prendre_marque). Le verrou est relu sous la marque : s'il a changé entre-temps, on n'y
+    touche pas. Il n'est jamais retiré ni déplacé : personne ne peut prendre sa place pendant la
+    reprise. Les marques de ce verrou-là sont effacées ensuite. True si repris."""
+    if not prendre_marque(fichier, identite, contenu):
+        return False
+    try:
         try:
-            if etat_verrou(fichier) != (True, abandonne):
+            if etat_verrou(fichier, fichier, contenu['id']) != (True, identite):
                 return False
         except OSError:
             return False
         ecrire_verrou(fichier, contenu)
         return True
     finally:
-        try:
-            os.remove(marque)
-        except OSError:
-            pass
+        dossier, nom = os.path.split(fichier)
+        prefixe = '%s.reprise.%s' % (nom, identite)
+        for entree in os.listdir(dossier):
+            if entree == prefixe or entree.startswith(prefixe + '.'):
+                try:
+                    os.remove(os.path.join(dossier, entree))
+                except OSError:
+                    pass
+
+
+PERDU = ("Une autre opération a repris la main sur ce profil.[CR]"
+         "Celle-ci s'est arrêtée sans rien modifier de plus.")
 
 
 @contextlib.contextmanager
@@ -911,22 +987,26 @@ def verrou(racine):
     """Un seul lancement à la fois touche aux réglages d'un profil (assistant, service,
     deux assistants). Le verrou porte un identifiant d'opération ; seule cette opération
     le retire. Un verrou abandonné (voir etat_verrou) est repris ; dans le doute,
-    on refuse : lève PackNonApplique sans rien modifier."""
+    on refuse : lève PackNonApplique sans rien modifier. Fournit garde() : à appeler avant
+    chaque étape qui modifie des fichiers ; lève PackNonApplique si le verrou a été perdu."""
     dossier = os.path.join(racine, 'script.dark-prophet')
     fichier = os.path.join(dossier, 'verrou')
     identifiant = '%032x' % random.SystemRandom().getrandbits(128)
+    candidat = '%s.candidat.%s' % (fichier, identifiant)
     cree = False
     try:
         os.makedirs(dossier, exist_ok=True)
         demarrage, battement = horloge_demarrage()
         contenu = {'id': identifiant, 'pid': os.getpid(), 'processus': empreinte_processus(os.getpid()),
                    'demarrage': demarrage, 'battement': battement}
+        with open(candidat, 'w') as sortie:   # avant le verrou : un verrou vide reste attribuable
+            json.dump(contenu, sortie)
         for _ in range(3):
             try:
                 fd = os.open(fichier, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             except FileExistsError:
                 try:
-                    abandonne, ancien = etat_verrou(fichier)
+                    abandonne, ancien = etat_verrou(fichier, fichier, identifiant)
                 except OSError:
                     continue   # retiré à l'instant (fin de l'autre opération) : on réessaie
                 if not abandonne:
@@ -954,6 +1034,15 @@ def verrou(racine):
                 pass
         raise PackNonApplique("Les réglages de ce profil ne sont pas modifiables (%s).[CR]"
                               "Rien n'a été modifié." % cause(erreur))
+    finally:
+        try:
+            os.remove(candidat)
+        except OSError:
+            pass
+    try:
+        candidats_vivants(fichier, identifiant, time.time_ns())   # efface ceux des opérations disparues
+    except OSError:
+        pass
     fin = threading.Event()
 
     def battre():
@@ -965,10 +1054,15 @@ def verrou(racine):
             except OSError as erreur:
                 log('battement du verrou : %r' % erreur)
 
+    def garde():
+        if proprietaire_du_verrou(fichier) != identifiant:
+            log('verrou perdu dans %s : arrêt sans rien modifier' % racine)
+            raise PackNonApplique(PERDU)
+
     battant = threading.Thread(target=battre, daemon=True)
     battant.start()
     try:
-        yield
+        yield garde
     finally:
         fin.set()
         battant.join(BATTEMENT + 1)
@@ -982,11 +1076,11 @@ def verrou(racine):
 
 
 def remplacer_dossiers(racine, preparer, attendu):
-    with verrou(racine):
-        _remplacer_dossiers(racine, preparer, attendu)
+    with verrou(racine) as garde:
+        _remplacer_dossiers(racine, preparer, attendu, garde)
 
 
-def _remplacer_dossiers(racine, preparer, attendu):
+def _remplacer_dossiers(racine, preparer, attendu, garde=lambda: None):
     """Remplace les dossiers DOSSIERS de `racine` sans jamais les laisser à moitié écrits.
     preparer(dossier) écrit le nouveau contenu dans `dossier` (un sous-dossier par entrée
     de DOSSIERS, déjà créé). attendu : {chemin relatif : taille} de ce qui doit en sortir.
@@ -1011,6 +1105,7 @@ def _remplacer_dossiers(racine, preparer, attendu):
         # Les renommages ne déplacent rien que si tout est sur le même stockage.
         if os.stat(nouveau).st_dev != os.stat(racine).st_dev:
             raise OSError(errno.EXDEV, os.strerror(errno.EXDEV))
+        garde()   # perdu : on laisse la préparation à celui qui a repris (sa reprise la jettera)
         noter_etape(transaction, 'bascule')
     except (OSError, zipfile.BadZipFile, zlib.error) as erreur:
         log('préparation abandonnée dans %s : %r' % (racine, erreur))
@@ -1021,9 +1116,10 @@ def _remplacer_dossiers(racine, preparer, attendu):
         raise PackNonApplique("Les nouveaux réglages n'ont pas pu être préparés (%s).[CR]"
                               "Tes réglages actuels n'ont pas été modifiés." % cause(erreur))
     try:
-        basculer(racine, transaction)
+        basculer(racine, transaction, garde)
     except OSError as erreur:
         log('bascule interrompue dans %s : %r' % (racine, erreur))
+        garde()
         try:
             annuler(racine, transaction)
             jeter(transaction)
@@ -1085,11 +1181,11 @@ def sauvegarder_actuel():
     PackNonApplique en cas d'échec : il ne faut alors rien remplacer."""
     if os.path.isdir(SAUVEGARDE):
         return
-    with verrou(ADDON_DATA):
-        _sauvegarder()
+    with verrou(ADDON_DATA) as garde:
+        _sauvegarder(garde)
 
 
-def _sauvegarder():
+def _sauvegarder(garde=lambda: None):
     provisoire = SAUVEGARDE + '.tmp'
     try:
         shutil.rmtree(provisoire, ignore_errors=True)
@@ -1105,6 +1201,7 @@ def _sauvegarder():
             raise OSError('copie incomplète')
         for relatif in attendu:
             forcer_ecriture(os.path.join(provisoire, *relatif.split('/')))
+        garde()
         os.replace(provisoire, SAUVEGARDE)
         forcer_ecriture(os.path.dirname(SAUVEGARDE))
     except OSError as erreur:
@@ -1725,6 +1822,13 @@ def formule_alkoflix():
         return
     if not dialog.yesno(TITRE, "Installer Arctic Fuse 3 et alkoFlix avec la configuration de DaRk-PrOphEt ?[CR]Kodi passera en français. Les réglages actuels de cet habillage seront remplacés (« Réinitialiser les réglages » les remet)."):
         return
+    libre = place_manquante_arctic()
+    if libre is not None:
+        if dialog.yesno(TITRE, "Il reste %d Mo libres : Arctic Fuse 3 et ses extensions en demandent environ %d pendant l'installation.[CR]"
+                               "Rien n'a été installé. Installer plutôt la version Extra-Light (environ 100 Mo, habillage d'origine de Kodi) ?"
+                        % (libre, BESOIN_ARCTIC // (1000 * 1000))):
+            formule_extra()
+        return
     noter_etat_avant()
     if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES) + ((VSTREAM, DNS, INTRO) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):
         # Jamais de bascule d'office : on propose l'Extra-Light, qui n'a pas besoin d'Arctic Fuse 3.
@@ -1798,6 +1902,12 @@ def formule_catchup():
         return
     version = choisir_version(avec_extra=False)
     if not version:
+        return
+    libre = place_manquante_arctic()
+    if libre is not None:
+        dialog.ok(TITRE, "Il reste %d Mo libres : Arctic Fuse 3 et ses extensions en demandent environ %d pendant l'installation.[CR]"
+                         "Rien n'a été installé. Libère de la place, ou choisis la version Extra-Light dans « Formule alkoFlix »."
+                  % (libre, BESOIN_ARCTIC // (1000 * 1000)))
         return
     noter_etat_avant()
     if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES, CATCHUP) + ((VSTREAM, DNS, INTRO) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):

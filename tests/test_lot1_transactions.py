@@ -901,12 +901,15 @@ class Verrou(Base):
         self.assertEqual(etat(self.racine), NOUVEAU)
 
     def test_verrou_vide(self):
+        demarrage, battement = d.horloge_demarrage()
+        createur = {'id': 'createur', 'pid': os.getpid(), 'processus': d.empreinte_processus(os.getpid()),
+                    'demarrage': demarrage, 'battement': battement}
+        poser(self.racine, {'script.dark-prophet/verrou.candidat.createur': json.dumps(createur).encode()})
         poser(self.racine, {'script.dark-prophet/verrou': b''})
-        with self.assertRaises(d.PackNonApplique):   # tout juste créé : peut-être en cours d'écriture
+        with self.assertRaises(d.PackNonApplique):   # son créateur (candidat déposé avant) vit encore
             d.ecrire_pack(pack(), self.racine)
-        ancien = time.time() - 5
-        os.utime(self.fichier, (ancien, ancien))
-        d.ecrire_pack(pack(), self.racine)            # vide depuis longtemps : abandonné
+        os.remove(self.fichier + '.candidat.createur')
+        d.ecrire_pack(pack(), self.racine)            # plus aucun créateur possible : abandonné
         self.assertEqual(etat(self.racine), NOUVEAU)
 
     def test_ne_retire_pas_le_verrou_d_un_autre(self):
