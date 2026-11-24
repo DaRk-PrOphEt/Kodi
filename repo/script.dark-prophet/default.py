@@ -642,20 +642,65 @@ def place_libre(chemin):
         return None
 
 
-# Place prise par Arctic Fuse 3 et ses extensions sur un Kodi neuf, ZIP compris (Kodi garde chaque
-# ZIP dans addons/packages) : mesuré le 17/11/2026 sur Kodi 21.3, 909 Mo en Base, 930 Mo en Full.
-BESOIN_ARCTIC = 950 * 1000 * 1000
+# Place prise par les plus gros composants d'Arctic Fuse 3 (en Mo), ZIP téléchargé + fichiers extraits :
+# Kodi garde les deux. Relevé le 24/11/2026 (Arctic Fuse 3.5.7). Indicatif : ces tailles changent d'une
+# version à l'autre (le ZIP du skin faisait 60 Mo en 3.5.2, 34 Mo en 3.5.7).
+TAILLES_ARCTIC = {SKIN: 82, 'resource.images.arctic.splash': 183, 'resource.images.arctic.weather': 120,
+                  'resource.images.arctic.backgrounds.surrealist': 94, 'resource.font.robotocjksc': 136,
+                  'resource.images.studios.coloured': 133, TMDBHELPER: 27}
+# Le reste de la formule : alkoFlix, langue, YouTube, petits modules, fichiers temporaires de Kodi.
+TAILLE_RESTE = 80
 
 
-def place_manquante_arctic():
-    """Mo libres si l'appareil n'a manifestement pas la place d'installer Arctic Fuse 3, sinon
-    None (déjà installé, place suffisante, ou espace libre inconnu : on n'empêche rien)."""
-    if installe(SKIN):
-        return None
+def evaluer_place():
+    """(verdict, Mo libres, Mo estimés) pour installer ce qui manque d'Arctic Fuse 3.
+    verdict : 'ok', 'inconnue' (l'appareil ne donne pas son espace libre), 'juste' (moins de
+    125 % de l'estimation : incertain) ou 'insuffisante' (moins de 75 % : l'écart dépasse ce
+    que l'imprécision de l'estimation peut expliquer)."""
+    manquants = [addon_id for addon_id in TAILLES_ARCTIC if not installe(addon_id)]
+    if not manquants:
+        return 'ok', None, 0
+    besoin = sum(TAILLES_ARCTIC[addon_id] for addon_id in manquants) + TAILLE_RESTE
     libre = place_libre(xbmcvfs.translatePath('special://home/addons/'))
-    if libre is None or libre >= BESOIN_ARCTIC:
-        return None
-    return libre // (1000 * 1000)
+    if libre is None:
+        return 'inconnue', None, besoin
+    libre //= 1000 * 1000
+    if libre < besoin * 0.75:
+        return 'insuffisante', libre, besoin
+    if libre < besoin * 1.25:
+        return 'juste', libre, besoin
+    return 'ok', libre, besoin
+
+
+def controler_place(extra_possible):
+    """Avant d'installer Arctic Fuse 3 : 'continuer', 'extra' ou 'annuler'. Rien n'est installé ni
+    effacé ici ; l'utilisateur garde la main sauf si la place manque manifestement."""
+    verdict, libre, besoin = evaluer_place()
+    if verdict == 'ok':
+        return 'continuer'
+    if verdict == 'inconnue':
+        dialog.ok(TITRE, "L'espace libre de l'appareil n'a pas pu être vérifié. Arctic Fuse 3 et ses extensions "
+                         "demandent environ %d Mo.[CR]Si l'installation échoue, la version Extra-Light est bien plus légère." % besoin)
+        return 'continuer'
+    constat = ("Il reste environ %d Mo libres ; Arctic Fuse 3 et ce qui lui manque demandent environ %d Mo "
+               "(estimation)." % (libre, besoin))
+    if verdict == 'insuffisante':
+        if extra_possible:
+            if dialog.yesno(TITRE, constat + "[CR]L'installation ne peut pas aboutir : rien n'a été installé. "
+                                             "Installer plutôt la version Extra-Light (environ 100 Mo) ?"):
+                return 'extra'
+            return 'annuler'
+        dialog.ok(TITRE, constat + "[CR]L'installation ne peut pas aboutir : rien n'a été installé. Libère de la place, "
+                                   "ou choisis la version Extra-Light dans « Formule alkoFlix ».")
+        return 'annuler'
+    if extra_possible:
+        choix = dialog.select(TITRE + ' : place limitée (environ %d Mo libres, %d Mo demandés)' % (libre, besoin),
+                              ['Installer plutôt la version Extra-Light (environ 100 Mo)',
+                               'Continuer avec Arctic Fuse 3 quand même', 'Annuler'])
+        return {0: 'extra', 1: 'continuer'}.get(choix, 'annuler')
+    if dialog.yesno(TITRE, constat + "[CR]L'installation risque d'échouer faute de place. Continuer quand même ?"):
+        return 'continuer'
+    return 'annuler'
 
 
 def verifier_place(chemin, octets):
@@ -1822,11 +1867,9 @@ def formule_alkoflix():
         return
     if not dialog.yesno(TITRE, "Installer Arctic Fuse 3 et alkoFlix avec la configuration de DaRk-PrOphEt ?[CR]Kodi passera en français. Les réglages actuels de cet habillage seront remplacés (« Réinitialiser les réglages » les remet)."):
         return
-    libre = place_manquante_arctic()
-    if libre is not None:
-        if dialog.yesno(TITRE, "Il reste %d Mo libres : Arctic Fuse 3 et ses extensions en demandent environ %d pendant l'installation.[CR]"
-                               "Rien n'a été installé. Installer plutôt la version Extra-Light (environ 100 Mo, habillage d'origine de Kodi) ?"
-                        % (libre, BESOIN_ARCTIC // (1000 * 1000))):
+    suite = controler_place(extra_possible=True)
+    if suite != 'continuer':
+        if suite == 'extra':
             formule_extra()
         return
     noter_etat_avant()
@@ -1903,11 +1946,7 @@ def formule_catchup():
     version = choisir_version(avec_extra=False)
     if not version:
         return
-    libre = place_manquante_arctic()
-    if libre is not None:
-        dialog.ok(TITRE, "Il reste %d Mo libres : Arctic Fuse 3 et ses extensions en demandent environ %d pendant l'installation.[CR]"
-                         "Rien n'a été installé. Libère de la place, ou choisis la version Extra-Light dans « Formule alkoFlix »."
-                  % (libre, BESOIN_ARCTIC // (1000 * 1000)))
+    if controler_place(extra_possible=False) != 'continuer':
         return
     noter_etat_avant()
     if not installer_tout((LANGUE, SONS, SAISIE, SKIN, ALKOFLIX, ICONES, CATCHUP) + ((VSTREAM, DNS, INTRO) if version == 'full' else ()) + (FLUX, YOUTUBE, UPNEXT)):

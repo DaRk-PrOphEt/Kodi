@@ -72,9 +72,10 @@ elif etape == 'remplacement':
             _fait.append(1); arret()
         return vrai(fichier, contenu)
     d.ecrire_verrou = ecrire
-elif etape == 'bascule':
-    d.empreinte_processus = lambda pid: None
-    d.horloge_demarrage = lambda: ('', time.time())
+elif etape in ('bascule', 'apres_garde'):
+    if etape == 'bascule':
+        d.empreinte_processus = lambda pid: None
+        d.horloge_demarrage = lambda: ('', time.time())
     vraie = d.noter_etape
     def noter(transaction, quoi):
         if quoi == 'bascule':
@@ -192,6 +193,27 @@ class Verrou(Base):
     def test_repreneur_tue_avant_le_remplacement(self):
         self.repreneur_tue_puis_concurrents('remplacement')
 
+    # Avec /proc (Linux, Android) : figée juste APRÈS garde() et avant d'écrire, bien au-delà du délai,
+    # l'opération garde son verrou ; personne d'autre n'écrit, elle termine seule à la reprise.
+    def test_figee_entre_garde_et_ecriture(self):
+        enfant = Enfant(self.racine, 'apres_garde')
+        try:
+            self.assertEqual(enfant.ligne(), 'bloque')
+            enfant.p.send_signal(signal.SIGSTOP)
+            time.sleep(4 * d.ABANDON)
+            for _ in range(3):
+                with self.assertRaises(d.PackNonApplique):
+                    d.ecrire_pack(pack(), self.racine)
+            self.assertEqual(etat(self.racine), ANCIEN)
+            enfant.p.send_signal(signal.SIGCONT)
+            enfant.continuer()
+            self.assertEqual(enfant.ligne(), 'ECRIT')
+            enfant.p.wait(10)
+        finally:
+            enfant.fin()
+        self.assertEqual(self.restes(), [])
+        self.assertFalse(os.path.exists(d.dossier_transaction(self.racine)))
+
     # A3 : sans /proc, une opération figée peut perdre son verrou ; en reprenant, elle ne doit
     # plus rien modifier.
     def test_operation_depossedee_ne_bascule_pas(self):
@@ -245,18 +267,23 @@ class StockagePlein(Base):
 
 
 class PlaceAvantInstallation(unittest.TestCase):
-    """Phase B : avant d'installer Arctic Fuse 3, on vérifie la place quand on peut la mesurer."""
+    """Contrôle de place avant Arctic Fuse 3 : estimation des seuls composants manquants ; refus
+    seulement si l'écart est net, avertissement avec choix sinon, rien d'inventé si l'espace est inconnu."""
+
+    MO = 1000 * 1000
 
     def setUp(self):
         self.vrais = {n: getattr(d, n) for n in ('choisir_version', 'noter_etat_avant', 'installer_tout', 'installe',
-                                                 'formule_extra', 'dialog', 'place_libre', 'formule_catchup')}
-        self.questions, self.messages, self.appels, self.reponses = [], [], [], []
-        d.dialog = types.SimpleNamespace(ok=lambda *a: self.messages.append(a[-1]), yesno=self.repondre)
+                                                 'formule_extra', 'dialog', 'place_libre')}
+        self.questions, self.messages, self.appels, self.reponses, self.choix = [], [], [], [], []
+        d.dialog = types.SimpleNamespace(ok=lambda *a: self.messages.append(a[-1]), yesno=self.repondre,
+                                         select=self.choisir)
         d.choisir_version = lambda *a, **k: 'base'
         d.noter_etat_avant = lambda: None
         d.formule_extra = lambda: self.appels.append('extra')
         d.installer_tout = lambda ids: self.appels.append('installer') or False
         d.installe = lambda a: False
+        self.besoin = sum(d.TAILLES_ARCTIC.values()) + d.TAILLE_RESTE   # Kodi neuf
 
     def tearDown(self):
         for nom, valeur in self.vrais.items():
@@ -266,45 +293,84 @@ class PlaceAvantInstallation(unittest.TestCase):
         self.questions.append(a[-1])
         return self.reponses.pop(0)
 
-    def test_place_insuffisante_rien_n_est_installe_extra_proposee(self):
-        d.place_libre = lambda chemin: 300 * 1024 * 1024
-        self.reponses = [True, True]
+    def choisir(self, titre, lignes):
+        self.questions.append(titre)
+        return self.choix.pop(0)
+
+    def libre(self, mo):
+        d.place_libre = lambda chemin: None if mo is None else mo * self.MO
+
+    def test_beaucoup_de_place(self):
+        self.libre(50000)
+        self.reponses = [True, False]             # puis « Extra-Light plutôt ? » après l'échec simulé : non
+        d.formule_alkoflix()
+        self.assertEqual(self.appels, ['installer'])
+        self.assertEqual(len(self.questions), 2)
+
+    def test_moins_de_950_mo_mais_dependances_deja_la(self):
+        lourds = set(d.TAILLES_ARCTIC) - {d.SKIN}
+        d.installe = lambda a: a in lourds         # seul le skin manque : environ 160 Mo
+        self.libre(400)
+        self.reponses = [True, False]
+        d.formule_alkoflix()
+        self.assertEqual(self.appels, ['installer'])
+
+    def test_place_limitee_extra_choisie(self):
+        self.libre(int(self.besoin * 0.9))
+        self.reponses, self.choix = [True], [0]
         d.formule_alkoflix()
         self.assertEqual(self.appels, ['extra'])
-        self.assertIn('Mo', self.questions[-1])
-        self.assertIn('Extra-Light', self.questions[-1])
+        self.assertIn('place limitée', self.questions[-1])
 
-    def test_place_insuffisante_refus(self):
-        d.place_libre = lambda chemin: 300 * 1024 * 1024
-        self.reponses = [True, False]
+    def test_place_limitee_formule_maintenue(self):
+        self.libre(int(self.besoin * 0.9))
+        self.reponses, self.choix = [True, False], [1]
+        d.formule_alkoflix()
+        self.assertEqual(self.appels, ['installer'])
+
+    def test_place_limitee_annulee(self):
+        self.libre(int(self.besoin * 0.9))
+        self.reponses, self.choix = [True], [-1]   # touche Retour
         d.formule_alkoflix()
         self.assertEqual(self.appels, [])
 
-    def test_place_suffisante_installation_normale(self):
-        d.place_libre = lambda chemin: 5 * 1024 ** 3
+    def test_place_clairement_insuffisante(self):
+        self.libre(200)
         self.reponses = [True, False]
         d.formule_alkoflix()
-        self.assertEqual(self.appels[0], 'installer')
+        self.assertEqual(self.appels, [])
+        self.assertIn('ne peut pas aboutir', self.questions[-1])
+        self.assertIn('estimation', self.questions[-1])
 
-    def test_place_inconnue_installation_normale(self):
-        d.place_libre = lambda chemin: None
+    def test_place_clairement_insuffisante_extra(self):
+        self.libre(200)
+        self.reponses = [True, True]
+        d.formule_alkoflix()
+        self.assertEqual(self.appels, ['extra'])
+
+    def test_place_inconnue_on_informe_et_on_continue(self):
+        self.libre(None)
         self.reponses = [True, False]
         d.formule_alkoflix()
-        self.assertEqual(self.appels[0], 'installer')
+        self.assertEqual(self.appels, ['installer'])
+        self.assertIn("n'a pas pu être vérifié", self.messages[0])
 
-    def test_habillage_deja_installe_pas_de_controle(self):
-        d.installe = lambda a: a == SKIN
-        d.place_libre = lambda chemin: 1
-        self.reponses = [True]
-        d.formule_alkoflix()
-        self.assertEqual(self.appels[0], 'installer')
-
-    def test_catch_up_place_insuffisante_refus_clair(self):
-        d.place_libre = lambda chemin: 300 * 1024 * 1024
+    def test_catch_up_meme_logique(self):
+        self.libre(200)
         self.reponses = [True]
         d.formule_catchup()
         self.assertNotIn('installer', self.appels)
-        self.assertIn('Mo', self.messages[-1])
+        self.assertIn('ne peut pas aboutir', self.messages[-1])
+        self.appels[:], self.questions[:] = [], []
+        self.libre(int(self.besoin * 0.9))
+        self.reponses = [True, True]             # « Continuer quand même ? » : oui
+        d.formule_catchup()
+        self.assertEqual(self.appels, ['installer'])
+        self.libre(50000)
+        self.appels[:] = []
+        self.reponses = [True]
+        d.formule_catchup()
+        self.assertEqual(self.appels, ['installer'])
 
 
 if __name__ == '__main__':
