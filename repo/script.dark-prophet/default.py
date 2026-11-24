@@ -643,11 +643,11 @@ def place_libre(chemin):
 
 
 # Place prise par les plus gros composants d'Arctic Fuse 3 (en Mo), ZIP téléchargé + fichiers extraits :
-# Kodi garde les deux. Relevé le 24/11/2026 (Arctic Fuse 3.5.7). Indicatif : ces tailles changent d'une
-# version à l'autre (le ZIP du skin faisait 60 Mo en 3.5.2, 34 Mo en 3.5.7).
-TAILLES_ARCTIC = {SKIN: 82, 'resource.images.arctic.splash': 183, 'resource.images.arctic.weather': 120,
-                  'resource.images.arctic.backgrounds.surrealist': 94, 'resource.font.robotocjksc': 136,
-                  'resource.images.studios.coloured': 133, TMDBHELPER: 27}
+# Kodi garde les deux. Mesuré le 24/11/2026 sur Kodi 21.3 avec Arctic Fuse 3.5.7 (installation neuve :
+# 600 Mo au total, estimés ici à 640). Indicatif : tailles et dépendances changent d'une version à
+# l'autre (le ZIP du skin faisait 60 Mo en 3.5.2, 34 Mo en 3.5.7).
+TAILLES_ARCTIC = {SKIN: 82, 'resource.images.arctic.splash': 182, 'resource.font.robotocjksc': 136,
+                  'resource.images.studios.coloured': 132, TMDBHELPER: 28}
 # Le reste de la formule : alkoFlix, langue, YouTube, petits modules, fichiers temporaires de Kodi.
 TAILLE_RESTE = 80
 
