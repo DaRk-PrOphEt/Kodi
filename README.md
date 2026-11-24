@@ -51,8 +51,7 @@ Le menu Options d'Arctic Fuse 3 porte des raccourcis « Extensions » et « DaRk
 plus de profil Catch-up TV ni d'écran de choix. Les extensions restent installées.
 
 Les packs de `packs/` sont fabriqués hors de Kodi ; le script ne propose plus de les
-exporter. « Publier la configuration de ce profil » reste disponible pour qui a saisi un
-jeton GitHub dans les paramètres de l'extension, et remplace alors le pack en ligne.
+exporter ni de les publier.
 
 ## Mettre à jour
 
