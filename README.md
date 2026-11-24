@@ -7,7 +7,9 @@ Adresse à ajouter comme source dans le gestionnaire de fichiers de Kodi :
 Puis : Extensions > Installer depuis un fichier zip > `repository.dark-prophet-x.y.z.zip`,
 et enfin Installer depuis un dépôt > DaRk-PrOphEt Repo > Extensions programmes > DaRk-PrOphEt.
 
-Le script propose deux formules (Kodi 21 ou plus récent) :
+Compatible et testé avec Kodi 21.3 Omega. Les autres versions ne sont pas validées actuellement.
+
+Le script propose deux formules :
 
 - **alkoFlix** : installe l'habillage Arctic Fuse 3 (dépôt officiel de jurialmunkey)
   et alkoFlix, puis applique la configuration `packs/arctic-fuse-3.zip`.

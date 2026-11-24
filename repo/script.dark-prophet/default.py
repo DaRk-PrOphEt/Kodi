@@ -327,9 +327,9 @@ def installer_tout(addon_ids):
                     continue
                 if addon_id == SKIN:
                     dialog.ok(TITRE, "Arctic Fuse 3 n'a pas pu être installé.[CR]Son dépôt ne propose peut-être pas de version "
-                                     "pour ce Kodi (Kodi 21 « Omega » conseillé), ou la connexion a coupé. L'habillage actuel n'a pas changé.")
+                                     "pour ce Kodi (testé avec Kodi 21.3 Omega), ou la connexion a coupé. L'habillage actuel n'a pas changé.")
                 else:
-                    dialog.ok(TITRE, "%s n'a pas pu être installé.[CR]Vérifie la connexion et que Kodi est en version 21 ou plus, puis relance." % NOMS[addon_id])
+                    dialog.ok(TITRE, "%s n'a pas pu être installé.[CR]Vérifie la connexion puis relance (testé avec Kodi 21.3 Omega)." % NOMS[addon_id])
                 return False
     finally:
         progression.close()
